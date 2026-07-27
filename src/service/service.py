@@ -754,38 +754,57 @@ async def message_generator(
         logger.error(f"[STREAM ERROR TRACEBACK]\n{traceback.format_exc()}")
         yield f"data: {json.dumps({'type': 'error', 'content': 'Internal server error'})}\n\n"
     finally:
-        # Always send section data at the end of the stream
+        # Fetch the final graph state once, then emit section data and (if the
+        # conversation finished) the final plan as INDEPENDENT guarded blocks, so a
+        # failure serializing one never suppresses the other.
+        final_state = None
         try:
-            state = await agent.aget_state(config=kwargs["config"])
-            if "current_section" in state.values:
-                current_section_enum = state.values["current_section"]
-                current_section_id = current_section_enum.value  # Use the string value
-                section_state = state.values.get("section_states", {}).get(current_section_id)
-                
-                # xbuddy: resolve the section template from the agent's own
-                # registry. No section->DB-id mapping exists, so database_id=None.
-                if agent_id != "xbuddy":
-                    raise ValueError(f"Unknown agent: {agent_id}")
-
-                from agents.xbuddy.prompts import get_section_template
-
-                try:
-                    section_template = get_section_template(current_section_enum)
-                except (ValueError, TypeError):
-                    section_template = None
-
-                section_data = {
-                    "database_id": None,
-                    "name": section_template.name if section_template else "Unknown Section",
-                    "status": section_state.status.value if section_state else "pending",
-                }
-                yield f"data: {json.dumps({'type': 'section', 'content': section_data})}\n\n"
+            final_state = await agent.aget_state(config=kwargs["config"])
         except Exception as e:
-            logger.error(f"Error getting section data: {e}")
+            logger.error(f"Error getting final state: {e}")
+
+        if final_state is not None:
+            # Section data
+            try:
+                if "current_section" in final_state.values:
+                    current_section_enum = final_state.values["current_section"]
+                    current_section_id = current_section_enum.value  # Use the string value
+                    section_state = final_state.values.get("section_states", {}).get(current_section_id)
+
+                    # xbuddy: resolve the section template from the agent's own
+                    # registry. No section->DB-id mapping exists, so database_id=None.
+                    if agent_id != "xbuddy":
+                        raise ValueError(f"Unknown agent: {agent_id}")
+
+                    from agents.xbuddy.prompts import get_section_template
+
+                    try:
+                        section_template = get_section_template(current_section_enum)
+                    except (ValueError, TypeError):
+                        section_template = None
+
+                    section_data = {
+                        "database_id": None,
+                        "name": section_template.name if section_template else "Unknown Section",
+                        "status": section_state.status.value if section_state else "pending",
+                    }
+                    yield f"data: {json.dumps({'type': 'section', 'content': section_data})}\n\n"
+            except Exception as e:
+                logger.error(f"Error getting section data: {e}")
+
+            # If the conversation just finished, deliver the completed plan as a
+            # DISTINCT event (not a chat message) so the client can render it as a
+            # standalone, full-width card rather than a normal streamed bubble.
+            # Independent of section data above.
+            try:
+                if final_state.values.get("finished") and final_state.values.get("final_output"):
+                    yield f"data: {json.dumps({'type': 'final_plan', 'content': {'markdown': final_state.values['final_output']}})}\n\n"
+            except Exception as e:
+                logger.error(f"Error emitting final plan: {e}")
 
         # Log stream completion
         logger.info(f"[STREAM] Complete: agent={agent_id}, thread={kwargs['config']['configurable']['thread_id'][:8]}...")
-        
+
         yield "data: [DONE]\n\n"
 
 

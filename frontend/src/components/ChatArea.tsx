@@ -2,12 +2,16 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { conversationStorage, ConversationRecord } from '@/utils/conversationStorage';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  // When true, this message is the finished FitnessBuddy plan and is rendered as
+  // a distinct full-width card (with GFM markdown incl. tables), not a chat bubble.
+  isFinalPlan?: boolean;
 }
 
 interface Section {
@@ -265,6 +269,28 @@ export default function ChatArea({
                   // The backend sends these but we don't need to process them
                 } else if (parsed.type === 'section') {
                   onSectionUpdate(parsed.content);
+                } else if (parsed.type === 'final_plan') {
+                  // The finished plan arrives as its own event (never streamed as
+                  // tokens). Render it as a standalone big card, NOT glued to the
+                  // preceding "does that sound right?" reply bubble.
+                  const markdown = parsed.content?.markdown || '';
+                  if (markdown) {
+                    // De-dupe: a reconnect/retry can re-emit final_plan; don't add
+                    // a second identical card.
+                    setMessages(prev =>
+                      prev.some(m => m.isFinalPlan && m.content === markdown)
+                        ? prev
+                        : [
+                            ...prev,
+                            {
+                              id: Date.now().toString() + '-final-plan',
+                              role: 'assistant',
+                              content: markdown,
+                              isFinalPlan: true,
+                            },
+                          ]
+                    );
+                  }
                 } else if (parsed.type === 'final_response') {
                   // Thread identity is owned solely by the 'metadata' event.
                   // Do NOT set threadId here: final_response may carry a
@@ -499,7 +525,81 @@ export default function ChatArea({
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {messages.map((message) => (
+            {messages.map((message) => {
+              // The finished plan renders as a distinct, full-width "big card"
+              // — not a normal chat bubble — with GFM markdown (tables included).
+              if (message.isFinalPlan) {
+                return (
+                  <div key={message.id} style={{ display: 'flex', justifyContent: 'stretch', width: '100%' }}>
+                    <div style={{
+                      width: '100%',
+                      border: '2px solid #6366f1',
+                      borderRadius: '16px',
+                      background: 'linear-gradient(180deg, #eef2ff 0%, #ffffff 120px)',
+                      boxShadow: '0 6px 20px rgba(99, 102, 241, 0.18)',
+                      overflow: 'hidden',
+                      position: 'relative'
+                    }}>
+                      <div style={{
+                        padding: '16px 24px',
+                        borderBottom: '1px solid #e0e7ff',
+                        background: '#6366f1',
+                        color: 'white',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between'
+                      }}>
+                        <span style={{ fontSize: '18px', fontWeight: 700 }}>🎉 Your Personalized Plan</span>
+                        <button
+                          onClick={() => copyToClipboard(message.content, message.id)}
+                          style={{
+                            padding: '6px 12px',
+                            border: 'none',
+                            borderRadius: '6px',
+                            backgroundColor: copiedMessageId === message.id ? '#10b981' : 'rgba(255,255,255,0.2)',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            fontWeight: 600
+                          }}
+                          title={copiedMessageId === message.id ? 'Copied!' : 'Copy plan'}
+                        >
+                          {copiedMessageId === message.id ? '✓ Copied' : '📋 Copy'}
+                        </button>
+                      </div>
+                      <div style={{ padding: '24px 28px', fontSize: '15px', lineHeight: '1.6', color: '#1e293b' }}>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            h1: ({ children }) => <h1 style={{ margin: '0 0 16px 0', fontSize: '24px', fontWeight: 700, color: '#3730a3' }}>{children}</h1>,
+                            h2: ({ children }) => <h2 style={{ margin: '24px 0 10px 0', fontSize: '19px', fontWeight: 700, color: '#4338ca', borderBottom: '1px solid #e0e7ff', paddingBottom: '4px' }}>{children}</h2>,
+                            h3: ({ children }) => <h3 style={{ margin: '16px 0 8px 0', fontSize: '16px', fontWeight: 700 }}>{children}</h3>,
+                            p: ({ children }) => <p style={{ margin: '0 0 12px 0' }}>{children}</p>,
+                            ul: ({ children }) => <ul style={{ margin: '0 0 12px 0', paddingLeft: '20px' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '0 0 12px 0', paddingLeft: '20px' }}>{children}</ol>,
+                            li: ({ children }) => <li style={{ margin: '4px 0' }}>{children}</li>,
+                            strong: ({ children }) => <strong style={{ fontWeight: 700 }}>{children}</strong>,
+                            em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                            table: ({ children }) => (
+                              <div style={{ overflowX: 'auto', margin: '8px 0 16px 0' }}>
+                                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '14px' }}>{children}</table>
+                              </div>
+                            ),
+                            thead: ({ children }) => <thead style={{ backgroundColor: '#eef2ff' }}>{children}</thead>,
+                            th: ({ children }) => <th style={{ border: '1px solid #c7d2fe', padding: '8px 10px', textAlign: 'left', fontWeight: 700 }}>{children}</th>,
+                            td: ({ children }) => <td style={{ border: '1px solid #e2e8f0', padding: '8px 10px', verticalAlign: 'top' }}>{children}</td>,
+                            code: ({ children }) => <code style={{ backgroundColor: '#f1f5f9', padding: '2px 4px', borderRadius: '3px', fontSize: '13px', fontFamily: 'monospace' }}>{children}</code>,
+                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #6366f1', paddingLeft: '12px', margin: '12px 0', fontStyle: 'italic', color: '#475569' }}>{children}</blockquote>,
+                          }}
+                        >
+                          {message.content}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              return (
               <div key={message.id} style={{
                 display: 'flex',
                 justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start'
@@ -528,6 +628,7 @@ export default function ChatArea({
                   }}>
                     {message.role === 'assistant' ? (
                       <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
                         components={{
                           p: ({ children }) => <p style={{ margin: '0 0 8px 0' }}>{children}</p>,
                           h1: ({ children }) => <h1 style={{ margin: '0 0 12px 0', fontSize: '18px', fontWeight: 'bold' }}>{children}</h1>,
@@ -597,7 +698,8 @@ export default function ChatArea({
                   )}
                 </div>
               </div>
-            ))}
+              );
+            })}
 
             {isLoading && (
               <div style={{ display: 'flex', justifyContent: 'flex-start' }}>

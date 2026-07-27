@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 AGENT_ID = "fitness-buddy"
 
+# The final plan is long (overview + weekly table + per-day exercise tables +
+# nutrition + tips); the default 3000-token cap truncates it mid-sentence.
+PLAN_MAX_TOKENS = 8000
+
 PLAN_PROMPT = """You are FitnessBuddy. The user has finished all five sections. Using ONLY the
 collected information below, write a clear, structured, personalized training + nutrition plan.
 
@@ -79,15 +83,26 @@ async def implementation_node(state: XBuddyState, config: RunnableConfig) -> dic
         lines.append(f"- {get_section_template(sid).name}: {summary.strip() or '(not provided)'}")
     collected = "\n".join(lines)
 
-    model = get_model()  # Sonnet — quality matters for the final artifact
-    resp = await model.ainvoke([HumanMessage(content=PLAN_PROMPT.format(collected=collected))], config)
+    # Sonnet — quality matters for the final artifact. The full plan (overview +
+    # weekly table + per-day exercise tables + nutrition + tips) is long, so raise
+    # max_tokens for THIS call only (get_model() is @cache'd, so bind instead of
+    # mutating the shared instance; Sonnet 4.x allows well above this).
+    model = get_model().bind(max_tokens=PLAN_MAX_TOKENS)
+    # Tag skip_stream so the plan's tokens are NOT pushed onto the user-facing SSE
+    # token stream — otherwise they'd stream token-by-token into the same chat
+    # bubble as generate_reply's reply and concatenate with it.
+    skip_cfg = {**(config or {}), "tags": [*((config or {}).get("tags") or []), "skip_stream"]}
+    resp = await model.ainvoke([HumanMessage(content=PLAN_PROMPT.format(collected=collected))], skip_cfg)
     plan = _text(resp.content).strip()
 
     _persist_plan(state.get("user_id", 1), state.get("thread_id", ""), plan)
 
     logger.info("implementation | plan generated (%d chars)", len(plan))
+    # Deliberately do NOT return the plan in "messages": that would emit a
+    # 'message' SSE event whose content overwrites the reply bubble with raw plan
+    # markdown. The plan reaches the client only via the dedicated 'final_plan'
+    # SSE event (emitted from final_output in service.py), rendered as a big card.
     return {
-        "messages": [resp],
         "final_output": plan,
         "finished": True,
     }
