@@ -50,6 +50,33 @@ def _text(content) -> str:
     return content or ""
 
 
+# Reliable completion signals (mirrors FounderBuddy's memory_updater). The final
+# plan is triggered by the LLM's is_satisfied, OR — as a fallback on the LAST
+# section only — a clear "done" or "give me the plan" from the user. This keeps
+# the formatted plan card from being blocked when the Haiku decision is too
+# conservative to ever set is_satisfied. Navigation between sections is still
+# LLM-judged; these keywords only gate the final finish.
+_DONE_SIGNALS = (
+    "thats all", "that's all", "all done", "im done", "i'm done", "were done", "we're done",
+    "im finished", "i'm finished", "finished", "done", "thats it", "that's it", "good to go",
+    "im good", "i'm good", "were good", "we're good", "move on", "next", "proceed",
+    "wrap it up", "wrap up", "lets finish", "let's finish", "thats everything", "that's everything",
+)
+_PLAN_REQUESTS = (
+    "give me the plan", "give me my plan", "my plan", "full plan", "final plan", "the plan",
+    "workout plan", "training plan", "generate the plan", "generate my plan", "make the plan",
+    "build the plan", "show me the plan", "create the plan", "put my plan together",
+    "出计划", "计划", "给我计划",
+)
+
+
+def _last_user_text(history: list) -> str:
+    for m in reversed(history):
+        if isinstance(m, HumanMessage):
+            return _text(m.content).strip().lower()
+    return ""
+
+
 def _format_transcript(history: list) -> str:
     """Render the message history as a plain-text transcript for the summarizer."""
     lines = []
@@ -129,9 +156,17 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         user_id = user_id_raw
 
     # Section is complete when the decision advanced (NEXT) OR the user is
-    # satisfied — matches the reference _status_from_output (LLM-judged, no
-    # keyword gate).
-    section_done = advancing or bool(is_satisfied)
+    # satisfied — matches the reference _status_from_output.
+    # Reliable finish (mirrors FounderBuddy): on the LAST section, a clear done /
+    # plan-request from the user finalizes it even if Haiku never set is_satisfied,
+    # so the formatted plan card is never blocked by a conservative decision.
+    last_user = _last_user_text(history)
+    is_last_section = current == list(SectionID)[-1]
+    user_done = bool(is_satisfied) or any(s in last_user for s in _DONE_SIGNALS)
+    user_requested_plan = any(s in last_user for s in _PLAN_REQUESTS)
+    finish_on_last = is_last_section and (user_done or user_requested_plan)
+
+    section_done = advancing or bool(is_satisfied) or finish_on_last
 
     # 1. Save the current section's content if the decision said so (or it's complete).
     if should_save or section_done:
@@ -166,11 +201,11 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         section_states.get(s.value) and section_states[s.value].status == SectionStatus.DONE
         for s in SectionID
     )
-    if all_done:
+    if all_done or finish_on_last:
         updates["should_generate_final_output"] = True
 
     logger.info(
-        "memory_updater | section=%s advancing=%s done=%s saved=%s all_done=%s",
-        current.value, advancing, section_done, should_save or section_done, all_done,
+        "memory_updater | section=%s advancing=%s done=%s finish_on_last=%s all_done=%s",
+        current.value, advancing, section_done, finish_on_last, all_done,
     )
     return updates
