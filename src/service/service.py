@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 
@@ -539,17 +540,73 @@ async def message_generator(
 
     sent_message_count = 0  # Track the number of messages sent to prevent duplicates
 
+    # Long-running, non-streaming nodes (e.g. the final-plan generation, which is
+    # tagged skip_stream and can take 60-90s) emit no chunks while they run. Left
+    # as a plain `async for` over agent.astream(...), the connection goes fully
+    # silent for that whole window — long enough for the client's own idle-stream
+    # timeout to kill the connection before the plan ever arrives.
+    #
+    # Wrapping the `async for` loop itself in asyncio.wait_for() does NOT work
+    # here: LangGraph's astream() doesn't respond to task cancellation the way
+    # wait_for expects, so the timeout silently never fires (confirmed via local
+    # testing — an independent ticker task proved the event loop stayed free the
+    # whole time, yet wait_for(..., timeout=15) never raised even once over 80+
+    # seconds). Instead, consume astream() in its own background task that pushes
+    # every event onto a queue, and poll that queue with a timeout — the queue's
+    # own get() correctly honors asyncio timeouts regardless of the producer.
+    _event_queue: asyncio.Queue = asyncio.Queue()
+    _STREAM_DONE = object()
+
+    async def _pump_stream_events():
+        try:
+            async for ev in agent.astream(**kwargs, stream_mode=["updates", "messages", "custom"]):
+                await _event_queue.put(ev)
+        except Exception as exc:  # noqa: BLE001 — forward to the consumer, don't swallow
+            await _event_queue.put(exc)
+        finally:
+            await _event_queue.put(_STREAM_DONE)
+
+    _pump_task = asyncio.create_task(_pump_stream_events())
+
     try:
         # Send metadata as the first event in the stream
         thread_id = kwargs["config"]["configurable"]["thread_id"]
         user_id = kwargs["config"]["configurable"]["user_id"]
-        
+
         yield f"data: {json.dumps({'type': 'metadata', 'content': {'thread_id': thread_id, 'user_id': user_id, 'run_id': str(run_id)}})}\n\n"
-        
+
         # Process streamed events from the graph and yield messages over the SSE stream.
-        async for stream_event in agent.astream(
-            **kwargs, stream_mode=["updates", "messages", "custom"]
-        ):
+        #
+        # A fixed per-item timeout on _event_queue.get() is NOT enough: large
+        # max_tokens calls (e.g. implementation_node's plan generation) make the
+        # Anthropic SDK stream internally even though the node calls .ainvoke(),
+        # so LangGraph's astream() keeps emitting "messages" chunks the whole
+        # time — the queue never goes idle. Those chunks are correctly filtered
+        # out below (tagged skip_stream, so the raw plan text doesn't leak into
+        # the chat bubble), so none of them ever produce a real yield to the
+        # client, and the connection still looks idle from the client's side.
+        # Track time since the last REAL client-facing yield instead, and use a
+        # shrinking timeout so a heartbeat fires the moment that deadline is hit
+        # regardless of how many filtered-out items pass through in between.
+        last_yield_at = time.monotonic()
+        HEARTBEAT_SECONDS = 15
+        while True:
+            remaining = HEARTBEAT_SECONDS - (time.monotonic() - last_yield_at)
+            if remaining <= 0:
+                yield ": heartbeat\n\n"
+                last_yield_at = time.monotonic()
+                continue
+            try:
+                stream_event = await asyncio.wait_for(_event_queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                yield ": heartbeat\n\n"
+                last_yield_at = time.monotonic()
+                continue
+            if stream_event is _STREAM_DONE:
+                break
+            if isinstance(stream_event, Exception):
+                raise stream_event
+
             # Log stream events efficiently
             if isinstance(stream_event, tuple):
                 stream_mode, _ = stream_event
@@ -724,11 +781,13 @@ async def message_generator(
                     logger.error(f"❌ FAILED MESSAGE TYPE: {type(message).__name__}")
                     logger.error(f"❌ FAILED MESSAGE CONTENT: {repr(message)}")
                     yield f"data: {json.dumps({'type': 'error', 'content': 'Unexpected error'})}\n\n"
+                    last_yield_at = time.monotonic()
                     continue
                 # LangGraph re-sends the input message, which feels weird, so drop it
                 if chat_message.type == "human" and chat_message.content == user_input.message:
                     continue
                 yield f"data: {json.dumps({'type': 'message', 'content': chat_message.model_dump()})}\n\n"
+                last_yield_at = time.monotonic()
 
             if stream_mode == "messages":
                 if not user_input.stream_tokens:
@@ -748,12 +807,14 @@ async def message_generator(
                     # that the model is asking for a tool to be invoked.
                     # So we only print non-empty content.
                     yield f"data: {json.dumps({'type': 'token', 'content': convert_message_content_to_string(content)})}\n\n"
+                    last_yield_at = time.monotonic()
     except Exception as e:
         import traceback
         logger.error(f"[STREAM ERROR] {str(e)} (run_id={run_id}, agent={agent_id})")
         logger.error(f"[STREAM ERROR TRACEBACK]\n{traceback.format_exc()}")
         yield f"data: {json.dumps({'type': 'error', 'content': 'Internal server error'})}\n\n"
     finally:
+        _pump_task.cancel()
         # Fetch the final graph state once, then emit section data and (if the
         # conversation finished) the final plan as INDEPENDENT guarded blocks, so a
         # failure serializing one never suppresses the other.
