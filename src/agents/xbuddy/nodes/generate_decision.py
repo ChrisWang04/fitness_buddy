@@ -71,30 +71,6 @@ def _extract_text(content) -> str:
     return content or ""
 
 
-def _latest_human_text(messages: list) -> str:
-    for m in reversed(messages):
-        if isinstance(m, HumanMessage):
-            c = m.content
-            if isinstance(c, list):
-                return "".join(b.get("text", "") for b in c if isinstance(b, dict))
-            return c or ""
-    return ""
-
-
-def _is_substantive(text: str) -> bool:
-    """True if the user just gave a real answer (not a short/clarifying message).
-
-    Used to advance deterministically: the Haiku decision is unreliable and tends
-    to linger on a section, so when the user has clearly provided information we
-    move on rather than over-asking. Questions and very short replies (e.g. "yes",
-    "the gym") are left to the LLM decision.
-    """
-    t = (text or "").strip()
-    if not t or t.endswith("?"):
-        return False
-    return len(t.split()) >= 4
-
-
 async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> dict:
     """Analyze the conversation and produce a structured routing decision."""
     current = state.get("current_section", list(SectionID)[0])
@@ -106,18 +82,20 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
 
     history = state.get("messages", [])
 
-    # If router already performed a deterministic explicit-advance THIS turn, do
-    # not let the Haiku decision advance AGAIN (the memory_updater→router loop
-    # would otherwise skip a second section). Force STAY; memory_updater will
-    # finalize the left section via force_advance_from.
-    if state.get("force_advance_from"):
-        last_reply = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
+    # Anti-runaway guard (matches the reference: advance only on FRESH user input).
+    # This node runs right after generate_reply, so history[-1] is the reply we just
+    # produced. On a memory_updater→router loop-back, that reply was the OPENER for a
+    # newly-entered section and history[-2] is the previous assistant reply — there is
+    # no new user message to act on — so STAY and wait for the user. Without this, a
+    # single turn's directive would cascade through every section in one pass.
+    if len(history) < 2 or not isinstance(history[-2], HumanMessage):
+        last_reply = history[-1] if history else None
         agent_output = ChatAgentOutput(
-            reply=_extract_text(last_reply.content) if last_reply else "",
+            reply=_extract_text(last_reply.content) if isinstance(last_reply, AIMessage) else "",
             router_directive=RouterDirective.STAY.value,
             should_save_content=False,
         )
-        logger.info("generate_decision | force_advance in flight → STAY (skip Haiku)")
+        logger.info("generate_decision | no fresh user input (loop-back opener) → STAY")
         return {"router_directive": RouterDirective.STAY.value, "agent_output": agent_output}
 
     template = get_section_template(current)
@@ -141,13 +119,9 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
             should_save_content=False,
         )
 
-    # Deterministic anti-stall: the Haiku decision reliably lingers on a section.
-    # If the user just gave a substantive answer, advance rather than over-asking.
-    # (Modify/next from the LLM are respected; only a stall — "stay" — is overridden.)
+    # Navigation is judged by the LLM (no keyword/word-count overrides). If the
+    # model/parse failed above, the safe fallback is STAY.
     directive = decision.router_directive
-    if directive == RouterDirective.STAY.value and _is_substantive(_latest_human_text(history)):
-        directive = RouterDirective.NEXT.value
-        logger.info("generate_decision | substantive answer → override STAY→NEXT")
 
     last_reply = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
     agent_output = ChatAgentOutput(
@@ -159,8 +133,8 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
     )
 
     logger.info(
-        "generate_decision | directive=%s (llm=%s) satisfied=%s save=%s",
-        directive, decision.router_directive, decision.is_satisfied, decision.should_save_content,
+        "generate_decision | directive=%s satisfied=%s save=%s",
+        directive, decision.is_satisfied, decision.should_save_content,
     )
     return {
         "router_directive": directive,

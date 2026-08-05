@@ -16,7 +16,7 @@ sections stay IN_PROGRESS until that judgement is made.
 
 import logging
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from core.llm import get_model
@@ -128,44 +128,13 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         logger.warning("memory_updater | user_id %r is not int-coercible", user_id_raw)
         user_id = user_id_raw
 
-    # 0. Deterministic explicit-advance path. Router already moved current_section
-    #    to the next section (or kept the last one) for this turn's reply, and left
-    #    the section to finalize in force_advance_from. Summarize + mark THAT
-    #    section DONE here, independent of the (forced-STAY) directive.
-    force_from = state.get("force_advance_from")
-    if force_from:
-        left = _as_section_id(force_from)
-        # Exclude the just-produced next-section opener so it doesn't pollute the
-        # summary of the section we're leaving.
-        hist_for_summary = history[:-1] if history and isinstance(history[-1], AIMessage) else history
-        summary = await _summarize_section(left, hist_for_summary, config)
-        cur = section_states.get(left.value) or SectionState(section_id=left)
-        if summary:
-            cur.content = SectionContent(content={"text": summary}, plain_text=summary)
-        else:
-            logger.warning("memory_updater | empty summary for %s — keeping prior content", left.value)
-        cur.status = SectionStatus.DONE
-        section_states[left.value] = cur
-        _persist_section(user_id, thread_id, cur)
+    # Section is complete when the decision advanced (NEXT) OR the user is
+    # satisfied — matches the reference _status_from_output (LLM-judged, no
+    # keyword gate).
+    section_done = advancing or bool(is_satisfied)
 
-        nxt = get_next_section(left)
-        if nxt and nxt.value in section_states and section_states[nxt.value].status == SectionStatus.PENDING:
-            section_states[nxt.value].status = SectionStatus.IN_PROGRESS
-
-        updates["section_states"] = section_states
-        all_done = all(
-            section_states.get(s.value) and section_states[s.value].status == SectionStatus.DONE
-            for s in SectionID
-        )
-        if all_done:
-            updates["should_generate_final_output"] = True
-        logger.info(
-            "memory_updater | explicit advance: finalized=%s all_done=%s", left.value, all_done
-        )
-        return updates
-
-    # 1. Save the current section's content if the decision said so (or we're advancing).
-    if should_save or advancing:
+    # 1. Save the current section's content if the decision said so (or it's complete).
+    if should_save or section_done:
         summary = await _summarize_section(current, history, config)
         cur = section_states.get(current.value) or SectionState(section_id=current)
         # Guard: never overwrite existing content with an empty summary.
@@ -176,8 +145,8 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         cur.satisfaction_status = (
             "satisfied" if is_satisfied else "needs_improvement" if is_satisfied is False else None
         )
-        # Completeness gate: only DONE when the decision advanced this section.
-        if advancing:
+        # Completeness gate: DONE when advanced or satisfied; otherwise at least IN_PROGRESS.
+        if section_done:
             cur.status = SectionStatus.DONE
         elif cur.status == SectionStatus.PENDING:
             cur.status = SectionStatus.IN_PROGRESS
@@ -201,7 +170,7 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         updates["should_generate_final_output"] = True
 
     logger.info(
-        "memory_updater | section=%s advancing=%s saved=%s all_done=%s",
-        current.value, advancing, should_save or advancing, all_done,
+        "memory_updater | section=%s advancing=%s done=%s saved=%s all_done=%s",
+        current.value, advancing, section_done, should_save or section_done, all_done,
     )
     return updates

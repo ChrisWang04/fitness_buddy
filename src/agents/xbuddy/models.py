@@ -134,11 +134,6 @@ class XBuddyState(MessagesState):
     router_directive: str = RouterDirective.NEXT
     finished: bool = False
 
-    # One-shot coordinator for a deterministic (code-driven) explicit "next"
-    # request. Router sets it to the section being LEFT; memory_updater reads it
-    # to summarize+finalize that section; initialize clears it at each turn start.
-    force_advance_from: str | None = None
-
     # Domain-specific data — TODO: customize XBuddyData above
     user_data: XBuddyData = Field(default_factory=XBuddyData)
 

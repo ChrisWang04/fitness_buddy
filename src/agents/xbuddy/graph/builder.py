@@ -26,13 +26,12 @@ from .routes import route_after_memory_updater, route_decision
 def build_xbuddy_graph():
     """Build the XBuddy agent graph.
 
-    Graph flow (one reply per turn — no in-turn loop back to router):
+    Graph flow:
         START -> initialize -> router -> generate_reply -> generate_decision
-                                 |                              |
-                          (END if no reply)             memory_updater
-                                                          |         |
-                                          (all sections done)     (else)
-                                                 implementation -> END   END
+                    ^                                           |
+                    +------------- memory_updater <-------------+
+                                        |
+                                implementation -> END
     """
     graph = StateGraph(XBuddyState)
 
@@ -65,7 +64,7 @@ def build_xbuddy_graph():
         route_after_memory_updater,
         {
             "implementation": "implementation",
-            END: END,
+            "router": "router",
         },
     )
 
