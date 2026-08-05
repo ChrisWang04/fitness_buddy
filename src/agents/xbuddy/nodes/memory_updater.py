@@ -61,6 +61,11 @@ _DONE_SIGNALS = (
     "im finished", "i'm finished", "finished", "done", "thats it", "that's it", "good to go",
     "im good", "i'm good", "were good", "we're good", "move on", "next", "proceed",
     "wrap it up", "wrap up", "lets finish", "let's finish", "thats everything", "that's everything",
+    # Common affirmations that mean "I'm done, go ahead" — multi-word to stay safe
+    # (avoid bare "good"/"ok" which could appear inside a real answer). Sonnet's
+    # is_satisfied is the primary signal; these are just a safety net.
+    "all good", "its all good", "it's all good", "sounds good", "sounds great", "looks good",
+    "go ahead", "lets go", "let's go", "ready to go", "im ready", "i'm ready", "that works",
 )
 _PLAN_REQUESTS = (
     "give me the plan", "give me my plan", "my plan", "full plan", "final plan", "the plan",
@@ -201,7 +206,10 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         section_states.get(s.value) and section_states[s.value].status == SectionStatus.DONE
         for s in SectionID
     )
-    if all_done or finish_on_last:
+    # Don't re-trigger once a plan already exists — otherwise any later "done"-ish
+    # message (e.g. the user re-affirming) regenerates the plan again, wasting an
+    # expensive Sonnet call and swapping in a second, different plan card.
+    if (all_done or finish_on_last) and not state.get("finished"):
         updates["should_generate_final_output"] = True
 
     logger.info(

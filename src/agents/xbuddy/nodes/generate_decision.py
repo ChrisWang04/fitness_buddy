@@ -40,7 +40,12 @@ Produce a structured decision:
     "next"  -> the current section is covered well enough to move on.
     "modify:<section_id>" -> ONLY if the user explicitly asked to go back and change a
         previous section. Valid ids: goals, profile, schedule, preferences, nutrition.
-- is_satisfied: true / false / null — does the user seem satisfied with what's captured here?
+- is_satisfied: true / false / null — has the user indicated they're satisfied or DONE with
+    this section? Set TRUE whenever the user affirms, agrees, or signals they're finished in
+    ANY wording — e.g. "yes", "ok", "sure", "yep", "cool", "sounds good", "looks good",
+    "that's all", "it's all good", "we're good", "let's do it", "give me the plan". Do NOT be
+    conservative: on the LAST section this is what triggers the final plan, so if the user is
+    clearly done or wants to proceed, set is_satisfied = true.
 - user_satisfaction_feedback: a short note on their satisfaction, or null.
 - should_save_content: true once this section has enough content worth saving.
 
@@ -106,8 +111,11 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
         required=", ".join(template.required_fields) or "none",
     )
 
-    # A cheaper/faster model is plenty for a structured classification.
-    model = get_model(AnthropicModelName.HAIKU_45).with_structured_output(ChatAgentDecision)
+    # A cheaper/faster model is plenty for this structured classification. Pin
+    # temperature to 0: this is a classification, not a creative task, and the
+    # default 0.4 was making stay/next judgements inconsistent across otherwise
+    # identical turns (verified via repeated local runs of the same transcript).
+    model = get_model(AnthropicModelName.HAIKU_45).bind(temperature=0).with_structured_output(ChatAgentDecision)
     # Defensive: tag skip_stream so this internal classification never leaks into the SSE stream.
     skip_cfg = {**(config or {}), "tags": [*((config or {}).get("tags") or []), "skip_stream"]}
     try:
@@ -115,6 +123,7 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
     except Exception as exc:  # unparseable / LLM error -> safe fallback
         logger.warning("generate_decision | failed (%s) — defaulting to STAY", exc)
         decision = ChatAgentDecision(
+            reasoning="LLM/parse error — falling back to STAY.",
             router_directive=RouterDirective.STAY.value,
             should_save_content=False,
         )
@@ -133,8 +142,8 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
     )
 
     logger.info(
-        "generate_decision | directive=%s satisfied=%s save=%s",
-        directive, decision.is_satisfied, decision.should_save_content,
+        "generate_decision | directive=%s satisfied=%s save=%s reasoning=%r",
+        directive, decision.is_satisfied, decision.should_save_content, decision.reasoning,
     )
     return {
         "router_directive": directive,

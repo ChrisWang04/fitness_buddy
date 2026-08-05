@@ -105,4 +105,8 @@ async def implementation_node(state: XBuddyState, config: RunnableConfig) -> dic
     return {
         "final_output": plan,
         "finished": True,
+        # Reset the trigger — otherwise it stays True in checkpointed state and
+        # every subsequent user message re-enters this node (re-running the
+        # expensive Sonnet call and overwriting final_output with a new plan).
+        "should_generate_final_output": False,
     }

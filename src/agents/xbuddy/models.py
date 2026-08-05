@@ -77,6 +77,14 @@ class XBuddyData(BaseModel):
 
 class ChatAgentDecision(BaseModel):
     """Structured decision from the generate_decision node."""
+    reasoning: str = Field(
+        ...,
+        description=(
+            "One sentence: for EACH required field of the current section, has the "
+            "user given a value (even a rough one) anywhere in the conversation? "
+            "State this explicitly before deciding router_directive."
+        ),
+    )
     router_directive: str = Field(
         ...,
         description="Navigation control: 'stay', 'next', or 'modify:<section_id>'",
