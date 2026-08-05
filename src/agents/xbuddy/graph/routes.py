@@ -7,21 +7,27 @@ https://github.com/Victoria824/FounderBuddy/blob/main/src/agents/founder_buddy/g
 
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
+from langgraph.constants import END
 
 from ..enums import RouterDirective
 from ..models import XBuddyState
 
 
-def route_after_memory_updater(state: XBuddyState) -> Literal["implementation", "router"]:
-    """Route after memory_updater — generate final output or loop back.
+def route_after_memory_updater(state: XBuddyState):
+    """Route after memory_updater — generate the final plan, or end the turn.
 
-    TODO: This checks should_generate_final_output. Make sure your
-    memory_updater sets this flag when all sections are complete.
+    Deliberately does NOT loop back to router within the same turn. The reply for
+    this turn was already produced by generate_reply (the router advances the
+    section up-front for explicit "next" requests, so that single reply is already
+    the right section's). Looping back would (a) generate a SECOND reply whose
+    message history ends with an assistant message — which Anthropic rejects as an
+    unsupported prefill — and (b) show the user two bubbles. A section advanced by
+    the Haiku decision simply takes effect on the next user turn via the router.
     """
     if state.get("should_generate_final_output", False):
         return "implementation"
-    return "router"
+    return END
 
 
 def route_decision(state: XBuddyState) -> Literal["generate_reply"] | None:

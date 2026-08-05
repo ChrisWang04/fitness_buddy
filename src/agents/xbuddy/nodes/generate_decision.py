@@ -15,7 +15,7 @@ safe default (keep asking) rather than wrongly advancing.
 
 import logging
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from core.llm import get_model
@@ -44,15 +44,20 @@ Produce a structured decision:
 - user_satisfaction_feedback: a short note on their satisfaction, or null.
 - should_save_content: true once this section has enough content worth saving.
 
-When to advance (IMPORTANT — don't over-ask):
-- Set "next" once the section's ESSENTIAL info is captured. You do NOT need every minor detail;
-  a clear primary answer plus a rough sense of the rest is enough.
+When to advance (IMPORTANT — bias strongly toward advancing; do NOT over-ask):
+- DEFAULT to "next". Set "stay" ONLY if the user has not yet given ANY of this section's
+  core information, or asked a direct question you must answer before moving on.
+- As soon as the user has given the section's essential info even ONCE, set "next". You do
+  NOT need every minor detail, and you do NOT need to ask the user to confirm before moving on.
 - ALWAYS set "next" if the user explicitly asks to move on (e.g. "next", "move on",
-  "go to the next section", "that's all", "let's continue"), even if some details are still fuzzy.
-- Only set "stay" if a genuinely essential piece is still missing AND the user has not asked to move on.
-- Never re-ask for something the user already answered or clearly doesn't want to specify —
-  make a reasonable assumption and advance instead of stalling.
-- At most one or two clarifying questions per section; after that, capture what you have and move on."""
+  "go to the next section", "that's all", "let's continue").
+- Set "next" if the user's latest message provides information that belongs to a LATER
+  section — that means they're already done with this one.
+- Never re-ask for something the user already answered or clearly skipped — make a reasonable
+  assumption and advance. Never ask the same question twice.
+- Do NOT set "stay" merely because the assistant asked a follow-up or confirmation question;
+  if the user has already provided this section's core info, advance regardless of any
+  pending question."""
 
 
 def _extract_text(content) -> str:
@@ -66,6 +71,30 @@ def _extract_text(content) -> str:
     return content or ""
 
 
+def _latest_human_text(messages: list) -> str:
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            c = m.content
+            if isinstance(c, list):
+                return "".join(b.get("text", "") for b in c if isinstance(b, dict))
+            return c or ""
+    return ""
+
+
+def _is_substantive(text: str) -> bool:
+    """True if the user just gave a real answer (not a short/clarifying message).
+
+    Used to advance deterministically: the Haiku decision is unreliable and tends
+    to linger on a section, so when the user has clearly provided information we
+    move on rather than over-asking. Questions and very short replies (e.g. "yes",
+    "the gym") are left to the LLM decision.
+    """
+    t = (text or "").strip()
+    if not t or t.endswith("?"):
+        return False
+    return len(t.split()) >= 4
+
+
 async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> dict:
     """Analyze the conversation and produce a structured routing decision."""
     current = state.get("current_section", list(SectionID)[0])
@@ -75,6 +104,22 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
         except ValueError:
             current = list(SectionID)[0]
 
+    history = state.get("messages", [])
+
+    # If router already performed a deterministic explicit-advance THIS turn, do
+    # not let the Haiku decision advance AGAIN (the memory_updater→router loop
+    # would otherwise skip a second section). Force STAY; memory_updater will
+    # finalize the left section via force_advance_from.
+    if state.get("force_advance_from"):
+        last_reply = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
+        agent_output = ChatAgentOutput(
+            reply=_extract_text(last_reply.content) if last_reply else "",
+            router_directive=RouterDirective.STAY.value,
+            should_save_content=False,
+        )
+        logger.info("generate_decision | force_advance in flight → STAY (skip Haiku)")
+        return {"router_directive": RouterDirective.STAY.value, "agent_output": agent_output}
+
     template = get_section_template(current)
     system = DECISION_SYSTEM_PROMPT.format(
         name=template.name,
@@ -82,7 +127,6 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
         description=template.description,
         required=", ".join(template.required_fields) or "none",
     )
-    history = state.get("messages", [])
 
     # A cheaper/faster model is plenty for a structured classification.
     model = get_model(AnthropicModelName.HAIKU_45).with_structured_output(ChatAgentDecision)
@@ -97,20 +141,28 @@ async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> 
             should_save_content=False,
         )
 
+    # Deterministic anti-stall: the Haiku decision reliably lingers on a section.
+    # If the user just gave a substantive answer, advance rather than over-asking.
+    # (Modify/next from the LLM are respected; only a stall — "stay" — is overridden.)
+    directive = decision.router_directive
+    if directive == RouterDirective.STAY.value and _is_substantive(_latest_human_text(history)):
+        directive = RouterDirective.NEXT.value
+        logger.info("generate_decision | substantive answer → override STAY→NEXT")
+
     last_reply = next((m for m in reversed(history) if isinstance(m, AIMessage)), None)
     agent_output = ChatAgentOutput(
         reply=_extract_text(last_reply.content) if last_reply else "",
-        router_directive=decision.router_directive,
+        router_directive=directive,
         user_satisfaction_feedback=decision.user_satisfaction_feedback,
         is_satisfied=decision.is_satisfied,
         should_save_content=decision.should_save_content,
     )
 
     logger.info(
-        "generate_decision | directive=%s satisfied=%s save=%s",
-        decision.router_directive, decision.is_satisfied, decision.should_save_content,
+        "generate_decision | directive=%s (llm=%s) satisfied=%s save=%s",
+        directive, decision.router_directive, decision.is_satisfied, decision.should_save_content,
     )
     return {
-        "router_directive": decision.router_directive,
+        "router_directive": directive,
         "agent_output": agent_output,
     }

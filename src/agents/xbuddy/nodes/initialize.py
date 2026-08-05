@@ -47,6 +47,13 @@ async def initialize_node(state: XBuddyState, config: RunnableConfig) -> dict:
     if not state.get("router_directive"):
         updates["router_directive"] = RouterDirective.NEXT
 
+    # Clear the one-shot explicit-advance coordinator at the start of every turn.
+    # It's set by router and consumed by generate_decision/memory_updater within a
+    # single turn; clearing it here prevents the memory_updater→router loop from
+    # re-triggering a second advance on the same user message.
+    if state.get("force_advance_from"):
+        updates["force_advance_from"] = None
+
     # 3. Cold start vs warm start. If section_states already exist, this is a
     #    returning user (checkpointer restored it) — leave it untouched.
     #    Otherwise bootstrap: every section PENDING, the first IN_PROGRESS.
