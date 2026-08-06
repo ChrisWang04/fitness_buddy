@@ -160,3 +160,7 @@ class XBuddyState(MessagesState):
     # Final output — TODO: rename to match your domain
     final_output: str | None = None
     should_generate_final_output: bool = False
+    # Set once memory_updater has held the final plan back for a turn so the user
+    # could answer a pending question. Bounds that to a single deferral, so a
+    # chatty last section can never stall the plan forever.
+    finish_deferred_once: bool = False

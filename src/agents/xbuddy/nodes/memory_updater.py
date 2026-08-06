@@ -188,21 +188,46 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
     # (history[-1] is the reply we just wrote; history[-2] is the user's turn only
     # if they just spoke, and another AI message on a loop-back opener).
     has_fresh_user_input = len(history) >= 2 and isinstance(history[-2], HumanMessage)
-    finish_on_last = (
-        is_last_section and has_fresh_user_input and (user_done or user_requested_plan)
-    )
 
     # On the last section, "advance" doesn't mean "open the next section" — it means
     # generate the entire plan and end the conversation. So it must not happen while
     # we've just asked the user something and they haven't answered: the decision
     # node is deliberately told to advance despite a pending question (that keeps it
     # from fixating mid-conversation), which is right for sections 1-4 but here left
-    # the user staring at a question that got steamrolled by the plan. Wait a turn so
-    # they can answer. An explicit done / plan-request still finishes immediately, so
-    # this can't trap someone who is ready to wrap up.
-    reply_asks_question = _last_reply_text(history).rstrip().endswith("?")
+    # the user staring at a question that got steamrolled by the plan.
+    #
+    # Two details this has to get right, both learned the hard way:
+    #  - Look for a question mark ANYWHERE, not just at the end. The reply that
+    #    triggered this typically asks its question and then trails off with an
+    #    offer ("...or 3 meals with a snack? If you're not sure, 3 meals plus a
+    #    snack is a sensible default."), so it doesn't end in "?".
+    #  - Gate the escape hatch on the user's LITERAL words, not is_satisfied. The
+    #    decision prompt pushes is_satisfied hard toward true and the model sets it
+    #    for "they've told me enough to proceed", which is not the same as the user
+    #    saying they're done — using it here defeated the guard entirely.
+    reply_asks_question = "?" in _last_reply_text(history)
+    explicit_user_done = (
+        any(s in last_user for s in _DONE_SIGNALS) or user_requested_plan
+    )
     awaiting_answer_on_last = (
-        is_last_section and reply_asks_question and not (user_done or user_requested_plan)
+        is_last_section
+        and reply_asks_question
+        and not explicit_user_done
+        # Only ever hold back once, so a last section that keeps asking questions
+        # can't strand the user without a plan — the failure mode this whole fix
+        # exists to avoid.
+        and not state.get("finish_deferred_once", False)
+    )
+    if awaiting_answer_on_last:
+        updates["finish_deferred_once"] = True
+
+    # Both routes to the plan have to respect the deferral — gating only the
+    # section status left finish_on_last firing straight past it.
+    finish_on_last = (
+        is_last_section
+        and has_fresh_user_input
+        and (user_done or user_requested_plan)
+        and not awaiting_answer_on_last
     )
 
     section_done = (
