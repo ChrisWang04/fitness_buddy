@@ -13,6 +13,7 @@ import logging
 
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 
 from core.llm import get_model
 
@@ -89,11 +90,34 @@ async def implementation_node(state: XBuddyState, config: RunnableConfig) -> dic
     # mutating the shared instance; Sonnet 4.x allows well above this).
     model = get_model().bind(max_tokens=PLAN_MAX_TOKENS)
     # Tag skip_stream so the plan's tokens are NOT pushed onto the user-facing SSE
-    # token stream — otherwise they'd stream token-by-token into the same chat
+    # *token* stream — otherwise they'd stream token-by-token into the same chat
     # bubble as generate_reply's reply and concatenate with it.
     skip_cfg = {**(config or {}), "tags": [*((config or {}).get("tags") or []), "skip_stream"]}
-    resp = await model.ainvoke([HumanMessage(content=PLAN_PROMPT.format(collected=collected))], skip_cfg)
-    plan = _text(resp.content).strip()
+
+    # Stream the plan out as it's written, via a dedicated custom event.
+    #
+    # This node is the longest call in the app (60-90s). Buffering it and shipping
+    # the whole thing as a single event at the very end made delivery all-or-
+    # nothing: the connection sat completely silent the entire time (so every
+    # proxy/function timeout in the path got a chance to kill it), and any failure
+    # lost 100% of the plan. Emitting chunks as they arrive keeps bytes flowing
+    # continuously and lets the card fill in live, which is also just better UX
+    # than staring at nothing for a minute and a half.
+    #
+    # These go out as "custom" stream events (not token events), so the frontend
+    # can route them into the standalone plan card instead of the chat bubble.
+    writer = get_stream_writer()
+    chunks: list[str] = []
+    async for chunk in model.astream(
+        [HumanMessage(content=PLAN_PROMPT.format(collected=collected))], skip_cfg
+    ):
+        text = _text(chunk.content)
+        if not text:
+            continue
+        chunks.append(text)
+        if writer:
+            writer({"type": "final_plan_chunk", "content": text})
+    plan = "".join(chunks).strip()
 
     _persist_plan(state.get("user_id", 1), state.get("thread_id", ""), plan)
 

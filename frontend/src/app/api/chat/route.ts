@@ -1,3 +1,11 @@
+// Final-plan generation is the longest call in the app (60-90s). Without this,
+// the route runs on Vercel's DEFAULT function timeout (10s Hobby / 15s Pro) —
+// a hard wall-clock cap that no amount of SSE heartbeating can extend, so the
+// plan was being cut off long before it finished. 60 is the maximum allowed on
+// Hobby; on Pro this can go up to 300 (deployment fails if it exceeds the plan's
+// limit, so raise it only after confirming the tier).
+export const maxDuration = 60;
+
 const logApiCall = (phase: string, data: Record<string, unknown>, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO') => {
   const timestamp = new Date().toISOString();
   const logLevel = process.env.NODE_ENV === 'development' ? 'DEBUG' : 'INFO';

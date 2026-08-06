@@ -12,6 +12,9 @@ interface Message {
   // When true, this message is the finished FitnessBuddy plan and is rendered as
   // a distinct full-width card (with GFM markdown incl. tables), not a chat bubble.
   isFinalPlan?: boolean;
+  // True while the plan card is still being appended to from final_plan_chunk
+  // events; cleared once the terminal final_plan event settles it.
+  isStreaming?: boolean;
 }
 
 interface Section {
@@ -269,16 +272,51 @@ export default function ChatArea({
                   // The backend sends these but we don't need to process them
                 } else if (parsed.type === 'section') {
                   onSectionUpdate(parsed.content);
+                } else if (parsed.type === 'final_plan_chunk') {
+                  // The plan streams in as it's written. Append each chunk into a
+                  // single card so it fills in live, instead of waiting 60-90s for
+                  // one all-or-nothing payload at the end.
+                  const chunk = parsed.content || '';
+                  if (chunk) {
+                    setMessages(prev => {
+                      const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+                      if (idx === -1) {
+                        return [
+                          ...prev,
+                          {
+                            id: Date.now().toString() + '-final-plan',
+                            role: 'assistant',
+                            content: chunk,
+                            isFinalPlan: true,
+                            isStreaming: true,
+                          },
+                        ];
+                      }
+                      const next = [...prev];
+                      next[idx] = { ...next[idx], content: next[idx].content + chunk };
+                      return next;
+                    });
+                  }
                 } else if (parsed.type === 'final_plan') {
                   // The finished plan arrives as its own event (never streamed as
                   // tokens). Render it as a standalone big card, NOT glued to the
                   // preceding "does that sound right?" reply bubble.
                   const markdown = parsed.content?.markdown || '';
                   if (markdown) {
-                    // De-dupe: a reconnect/retry can re-emit final_plan; don't add
-                    // a second identical card.
-                    setMessages(prev =>
-                      prev.some(m => m.isFinalPlan && m.content === markdown)
+                    setMessages(prev => {
+                      // The plan normally arrives via final_plan_chunk; this event
+                      // is the authoritative full text that closes it out. Settle
+                      // the streamed card with it (covers any dropped chunk) rather
+                      // than appending a second copy.
+                      const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+                      if (idx !== -1) {
+                        const next = [...prev];
+                        next[idx] = { ...next[idx], content: markdown, isStreaming: false };
+                        return next;
+                      }
+                      // De-dupe: a reconnect/retry can re-emit final_plan; don't add
+                      // a second identical card.
+                      return prev.some(m => m.isFinalPlan && m.content === markdown)
                         ? prev
                         : [
                             ...prev,
@@ -288,8 +326,8 @@ export default function ChatArea({
                               content: markdown,
                               isFinalPlan: true,
                             },
-                          ]
-                    );
+                          ];
+                    });
                   }
                 } else if (parsed.type === 'final_response') {
                   // Thread identity is owned solely by the 'metadata' event.

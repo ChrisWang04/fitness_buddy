@@ -647,6 +647,14 @@ async def message_generator(
                             logger.debug(f"Sending {len(new_messages)} new messages")
 
             if stream_mode == "custom":
+                # Plan chunks stream out as their own SSE event so the frontend can
+                # append them into the standalone plan card. Handled here (and NOT
+                # passed into the message pipeline below) so they never land in the
+                # chat bubble as ordinary message content.
+                if isinstance(event, dict) and event.get("type") == "final_plan_chunk":
+                    yield f"data: {json.dumps({'type': 'final_plan_chunk', 'content': event.get('content', '')})}\n\n"
+                    last_yield_at = time.monotonic()
+                    continue
                 new_messages = [event]
 
             # LangGraph streaming may emit tuples: (field_name, field_value)
