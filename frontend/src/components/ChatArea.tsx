@@ -15,6 +15,9 @@ interface Message {
   // True while the plan card is still being appended to from final_plan_chunk
   // events; cleared once the terminal final_plan event settles it.
   isStreaming?: boolean;
+  // True while we're polling for the persisted plan after the stream was cut
+  // short (Vercel's 60s function cap) — drives the "finishing your plan" state.
+  isRecovering?: boolean;
 }
 
 interface Section {
@@ -153,6 +156,72 @@ export default function ChatArea({
     return placeholders[agentId] || 'Type your message...';
   };
 
+  // Fill the plan card from the persisted copy when the SSE stream got cut short.
+  //
+  // On Vercel Hobby the /api/chat function is hard-capped at 60s while plan
+  // generation takes ~80s, so the stream dies mid-plan and the card would be left
+  // with truncated markdown. The Fly backend keeps going and saves the finished
+  // plan to Supabase — but not until ~20s AFTER the proxy died, so a single fetch
+  // would usually be too early. Poll until it lands, then settle the card with the
+  // complete text.
+  const recoverFinalPlan = useCallback(async (recoveryThreadId: string | null) => {
+    if (!recoveryThreadId || !userId) return;
+
+    // Mark the truncated card as still finishing so the user sees progress
+    // rather than a plan that just stops mid-sentence.
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = { ...next[idx], isRecovering: true };
+      return next;
+    });
+
+    const POLL_INTERVAL_MS = 3000;
+    const MAX_WAIT_MS = 45000;
+    const deadline = Date.now() + MAX_WAIT_MS;
+
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+      try {
+        const res = await fetch(
+          `/api/plan?thread_id=${encodeURIComponent(recoveryThreadId)}&user_id=${encodeURIComponent(
+            String(userId)
+          )}&agent_id=${encodeURIComponent(selectedAgent || 'xbuddy')}`
+        );
+        const data = await res.json();
+        const markdown = data?.business_plan || data?.markdown_content || '';
+        if (data?.success && markdown) {
+          setMessages(prev => {
+            const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+            if (idx === -1) return prev;
+            const next = [...prev];
+            next[idx] = {
+              ...next[idx],
+              content: markdown,
+              isStreaming: false,
+              isRecovering: false,
+            };
+            return next;
+          });
+          return;
+        }
+      } catch {
+        // Transient failure — keep polling until the deadline.
+      }
+    }
+
+    // Gave up waiting: stop showing the "finishing" state so the card isn't
+    // stuck pretending it's still working.
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = { ...next[idx], isStreaming: false, isRecovering: false };
+      return next;
+    });
+  }, [userId, selectedAgent]);
+
   // Extract send message logic
   const handleSendMessage = useCallback(async (messageContent: string) => {
     if (!messageContent.trim() || isLoading || !selectedAgent || !userId) return;
@@ -228,6 +297,13 @@ export default function ChatArea({
       setMessages(prev => [...prev, tempAssistantMessage]);
       setStreamingContent('');
 
+      // Track plan delivery across the stream so we can tell a completed plan
+      // from one truncated by the proxy's function timeout. Locals (not state)
+      // so the values read correctly inside this closure.
+      let planStreamStarted = false;
+      let planCompleted = false;
+      let activeThreadId: string | null = threadId;
+
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -264,8 +340,13 @@ export default function ChatArea({
                   });
                 } else if (parsed.type === 'metadata') {
                   // Handle metadata event - extract thread_id
-                  if (parsed.content && parsed.content.thread_id && !threadId) {
-                    onThreadIdChange(parsed.content.thread_id);
+                  if (parsed.content && parsed.content.thread_id) {
+                    // Capture locally too: the recovery poll needs the thread id
+                    // even on the turn where the `threadId` prop is still null.
+                    activeThreadId = parsed.content.thread_id;
+                    if (!threadId) {
+                      onThreadIdChange(parsed.content.thread_id);
+                    }
                   }
                 } else if (parsed.type === 'message') {
                   // Skip duplicate message events - content is already handled via tokens
@@ -278,6 +359,7 @@ export default function ChatArea({
                   // one all-or-nothing payload at the end.
                   const chunk = parsed.content || '';
                   if (chunk) {
+                    planStreamStarted = true;
                     setMessages(prev => {
                       const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
                       if (idx === -1) {
@@ -303,6 +385,7 @@ export default function ChatArea({
                   // preceding "does that sound right?" reply bubble.
                   const markdown = parsed.content?.markdown || '';
                   if (markdown) {
+                    planCompleted = true;
                     setMessages(prev => {
                       // The plan normally arrives via final_plan_chunk; this event
                       // is the authoritative full text that closes it out. Settle
@@ -356,6 +439,14 @@ export default function ChatArea({
         reader.releaseLock();
         // Ensure loading is set to false when stream ends
         setIsLoading(false);
+        // The plan began streaming but the terminal final_plan never arrived —
+        // the proxy's function timeout cut us off mid-plan. Recover the finished
+        // copy from the backend so the card never ends truncated. Runs for the
+        // abrupt-kill path and the normal [DONE] path alike (on a healthy stream
+        // planCompleted is true, so this is a no-op).
+        if (planStreamStarted && !planCompleted) {
+          await recoverFinalPlan(activeThreadId);
+        }
       }
 
     } catch (error) {
@@ -372,7 +463,7 @@ export default function ChatArea({
         setIsAutoMode(false);
       }
     }
-  }, [isLoading, selectedAgent, userId, threadId, mode, onThreadIdChange, onSectionUpdate, isAutoMode]);
+  }, [isLoading, selectedAgent, userId, threadId, mode, onThreadIdChange, onSectionUpdate, isAutoMode, recoverFinalPlan]);
 
   const handleAutoReply = useCallback(async (autoSend = false) => {
     if (isLoading || isGeneratingLLM || !selectedAgent || !userId) return;
@@ -587,7 +678,13 @@ export default function ChatArea({
                         alignItems: 'center',
                         justifyContent: 'space-between'
                       }}>
-                        <span style={{ fontSize: '18px', fontWeight: 700 }}>🎉 Your Personalized Plan</span>
+                        <span style={{ fontSize: '18px', fontWeight: 700 }}>
+                          {message.isRecovering
+                            ? '⏳ Finishing your plan…'
+                            : message.isStreaming
+                              ? '✍️ Writing your plan…'
+                              : '🎉 Your Personalized Plan'}
+                        </span>
                         <button
                           onClick={() => copyToClipboard(message.content, message.id)}
                           style={{
