@@ -236,6 +236,13 @@ export default function ChatArea({
     setInput('');
     setIsLoading(true);
 
+    // Plan-delivery tracking. Declared out here (not inside the streaming block)
+    // so the catch below can tell a genuine connection failure from the expected
+    // mid-plan cutoff on Vercel Hobby, which the recovery poll already handles.
+    let planStreamStarted = false;
+    let planCompleted = false;
+    let activeThreadId: string | null = threadId;
+
     try {
       const requestPayload = {
         messages: [{ role: 'user', content: userMessage.content }],
@@ -296,13 +303,6 @@ export default function ChatArea({
 
       setMessages(prev => [...prev, tempAssistantMessage]);
       setStreamingContent('');
-
-      // Track plan delivery across the stream so we can tell a completed plan
-      // from one truncated by the proxy's function timeout. Locals (not state)
-      // so the values read correctly inside this closure.
-      let planStreamStarted = false;
-      let planCompleted = false;
-      let activeThreadId: string | null = threadId;
 
       try {
         while (true) {
@@ -451,12 +451,18 @@ export default function ChatArea({
 
     } catch (error) {
       console.error('Error:', error);
-      const errorMessage: Message = {
-        id: Date.now().toString() + '-error',
-        role: 'assistant',
-        content: `Sorry, an error occurred while connecting to ${getAgentName(selectedAgent)}. Please try again.`
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      // A mid-plan cutoff (Vercel Hobby's 60s function cap) surfaces here as a
+      // read error, but it isn't a failure the user needs to see: the recovery
+      // poll in the finally above already refilled the card from the persisted
+      // plan. Only show the generic error when the plan wasn't in flight.
+      if (!planStreamStarted) {
+        const errorMessage: Message = {
+          id: Date.now().toString() + '-error',
+          role: 'assistant',
+          content: `Sorry, an error occurred while connecting to ${getAgentName(selectedAgent)}. Please try again.`
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      }
       setIsLoading(false);
       // Stop auto mode on error
       if (isAutoMode) {
