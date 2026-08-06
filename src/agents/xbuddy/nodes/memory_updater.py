@@ -169,7 +169,20 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
     is_last_section = current == list(SectionID)[-1]
     user_done = bool(is_satisfied) or any(s in last_user for s in _DONE_SIGNALS)
     user_requested_plan = any(s in last_user for s in _PLAN_REQUESTS)
-    finish_on_last = is_last_section and (user_done or user_requested_plan)
+
+    # The signals above read the LAST user message — which, on a loop-back turn,
+    # still belongs to the PREVIOUS section. When the loop advances into the final
+    # section, is_last_section flips true while that stale message is still the
+    # most recent one, so an ordinary "next" used to leave Preferences would fire
+    # the whole plan the instant Nutrition opened, before the user answered a
+    # single nutrition question. Require input the user actually gave *after*
+    # entering this section — the same "fresh input" test generate_decision uses
+    # (history[-1] is the reply we just wrote; history[-2] is the user's turn only
+    # if they just spoke, and another AI message on a loop-back opener).
+    has_fresh_user_input = len(history) >= 2 and isinstance(history[-2], HumanMessage)
+    finish_on_last = (
+        is_last_section and has_fresh_user_input and (user_done or user_requested_plan)
+    )
 
     section_done = advancing or bool(is_satisfied) or finish_on_last
 
@@ -213,7 +226,7 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         updates["should_generate_final_output"] = True
 
     logger.info(
-        "memory_updater | section=%s advancing=%s done=%s finish_on_last=%s all_done=%s",
-        current.value, advancing, section_done, finish_on_last, all_done,
+        "memory_updater | section=%s advancing=%s done=%s finish_on_last=%s all_done=%s fresh_input=%s",
+        current.value, advancing, section_done, finish_on_last, all_done, has_fresh_user_input,
     )
     return updates
