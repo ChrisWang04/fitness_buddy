@@ -16,7 +16,7 @@ sections stay IN_PROGRESS until that judgement is made.
 
 import logging
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from core.llm import get_model
@@ -79,6 +79,14 @@ def _last_user_text(history: list) -> str:
     for m in reversed(history):
         if isinstance(m, HumanMessage):
             return _text(m.content).strip().lower()
+    return ""
+
+
+def _last_reply_text(history: list) -> str:
+    """The assistant reply generated this turn (history[-1] after generate_reply)."""
+    for m in reversed(history):
+        if isinstance(m, AIMessage):
+            return _text(m.content).strip()
     return ""
 
 
@@ -184,7 +192,22 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         is_last_section and has_fresh_user_input and (user_done or user_requested_plan)
     )
 
-    section_done = advancing or bool(is_satisfied) or finish_on_last
+    # On the last section, "advance" doesn't mean "open the next section" — it means
+    # generate the entire plan and end the conversation. So it must not happen while
+    # we've just asked the user something and they haven't answered: the decision
+    # node is deliberately told to advance despite a pending question (that keeps it
+    # from fixating mid-conversation), which is right for sections 1-4 but here left
+    # the user staring at a question that got steamrolled by the plan. Wait a turn so
+    # they can answer. An explicit done / plan-request still finishes immediately, so
+    # this can't trap someone who is ready to wrap up.
+    reply_asks_question = _last_reply_text(history).rstrip().endswith("?")
+    awaiting_answer_on_last = (
+        is_last_section and reply_asks_question and not (user_done or user_requested_plan)
+    )
+
+    section_done = (
+        advancing or bool(is_satisfied) or finish_on_last
+    ) and not awaiting_answer_on_last
 
     # 1. Save the current section's content if the decision said so (or it's complete).
     if should_save or section_done:
