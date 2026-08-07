@@ -49,6 +49,14 @@ Produce a structured decision:
 - user_satisfaction_feedback: a short note on their satisfaction, or null.
 - should_save_content: true once this section has enough content worth saving.
 
+CRITICAL — judge ONLY what the USER actually said:
+- Count information from the USER's own messages. Do NOT count something just because
+  it appears in the assistant's reply: the assistant can restate or assume wrongly, and
+  treating its words as fact launders a guess into a saved answer.
+- If the user's latest message doesn't address this section at all (it's off-topic, or a
+  repeat of an earlier message), that is NOT new information — set "stay" unless the
+  section was already covered by something they genuinely said earlier.
+
 When to advance (IMPORTANT — bias strongly toward advancing; do NOT over-ask):
 - DEFAULT to "next". Set "stay" ONLY if the user has not yet given ANY of this section's
   core information, or asked a direct question you must answer before moving on.
@@ -58,8 +66,9 @@ When to advance (IMPORTANT — bias strongly toward advancing; do NOT over-ask):
   "go to the next section", "that's all", "let's continue").
 - Set "next" if the user's latest message provides information that belongs to a LATER
   section — that means they're already done with this one.
-- Never re-ask for something the user already answered or clearly skipped — make a reasonable
-  assumption and advance. Never ask the same question twice.
+- Never re-ask something the user already answered or clearly skipped — advance instead.
+  Never ask the same question twice. (Advancing past a skipped detail is fine; inventing
+  the user's answer to it is not — see the CRITICAL rule above.)
 - Do NOT set "stay" merely because the assistant asked a follow-up or confirmation question;
   if the user has already provided this section's core info, advance regardless of any
   pending question."""
