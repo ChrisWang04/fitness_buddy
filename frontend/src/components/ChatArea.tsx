@@ -35,6 +35,9 @@ interface ChatAreaProps {
   currentSection: Section | null;
   onThreadIdChange: (threadId: string) => void;
   onSectionUpdate: (section: Section) => void;
+  // Incremented by the sidebar's "Edit Full Final Output" button; each bump puts
+  // the plan card into in-place edit mode.
+  editPlanSignal?: number;
 }
 
 export default function ChatArea({
@@ -45,7 +48,8 @@ export default function ChatArea({
   loadedMessages,
   currentSection,
   onThreadIdChange,
-  onSectionUpdate
+  onSectionUpdate,
+  editPlanSignal
 }: ChatAreaProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -55,6 +59,13 @@ export default function ChatArea({
   const [copiedAll, setCopiedAll] = useState(false);
   const [isGeneratingLLM, setIsGeneratingLLM] = useState(false);
   const [isAutoMode, setIsAutoMode] = useState(false);  // auto-conversation button removed; setter still used to reset on thread switch
+  // In-place plan editing: id of the plan message being edited, its working copy,
+  // and save status. The plan is markdown, so the editable view is the markdown
+  // SOURCE — lossless, unlike round-tripping rendered HTML.
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [planDraft, setPlanDraft] = useState<string>('');
+  const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [planSaveError, setPlanSaveError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const autoModeRef = useRef(false);
@@ -102,6 +113,42 @@ export default function ChatArea({
     }
   }, [loadedMessages, threadId]);
 
+  // business_plans is the source of truth for the final plan. The conversation is
+  // restored from localStorage, so an edit made on another device/session (or a
+  // plan finished by the recovery poll) would otherwise show a stale card. On
+  // load, reconcile the plan card against the persisted copy.
+  useEffect(() => {
+    if (!threadId || !userId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/plan?thread_id=${encodeURIComponent(threadId)}&user_id=${encodeURIComponent(
+            String(userId)
+          )}&agent_id=${encodeURIComponent(selectedAgent || 'xbuddy')}`
+        );
+        const data = await res.json();
+        const markdown = data?.business_plan || data?.markdown_content || '';
+        if (cancelled || !data?.success || !markdown) return;
+        setMessages(prev => {
+          const idx = prev.findIndex(m => m.isFinalPlan);
+          // Don't clobber a card that's mid-stream or being edited right now.
+          if (idx === -1 || prev[idx].isStreaming || prev[idx].content === markdown) return prev;
+          if (editingPlanId === prev[idx].id) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], content: markdown };
+          return next;
+        });
+      } catch {
+        // Offline or backend hiccup — keep whatever the conversation already has.
+      }
+    })();
+    return () => { cancelled = true; };
+    // Intentionally keyed on the conversation, not on `messages`: this is a
+    // load-time reconciliation, not a live sync.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId, userId, selectedAgent, loadedMessages]);
+
   // Save conversation to localStorage when messages or threadId changes
   useEffect(() => {
     if (threadId && messages.length > 0) {
@@ -141,6 +188,58 @@ export default function ChatArea({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, isAutoMode, isLoading, isGeneratingLLM]);
+
+  // Sidebar "Edit Full Final Output" pressed -> put the plan card into edit mode
+  // in place. Edits the markdown source, which is exactly what's persisted.
+  useEffect(() => {
+    if (!editPlanSignal) return;
+    setMessages(prev => {
+      const plan = [...prev].reverse().find(m => m.isFinalPlan && !m.isStreaming);
+      if (plan) {
+        setEditingPlanId(plan.id);
+        setPlanDraft(plan.content);
+        setPlanSaveError(null);
+      }
+      return prev;
+    });
+  }, [editPlanSignal]);
+
+  // Persist the edited plan. Straight DB write via /api/plan (no LLM, no
+  // regeneration): the backend owns the write because RLS blocks the anon key on
+  // business_plans. On success the card content is updated locally too, which the
+  // localStorage effect above picks up, so a reload shows the edited version.
+  const handleSavePlan = useCallback(async (messageId: string) => {
+    if (!threadId || !userId) {
+      setPlanSaveError('Missing conversation id — cannot save.');
+      return;
+    }
+    setIsSavingPlan(true);
+    setPlanSaveError(null);
+    try {
+      const res = await fetch('/api/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          thread_id: threadId,
+          user_id: userId,
+          markdown: planDraft,
+          agent_id: selectedAgent || 'xbuddy',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.message || `Save failed (${res.status})`);
+      }
+      setMessages(prev =>
+        prev.map(m => (m.id === messageId ? { ...m, content: planDraft } : m))
+      );
+      setEditingPlanId(null);
+    } catch (err) {
+      setPlanSaveError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setIsSavingPlan(false);
+    }
+  }, [threadId, userId, planDraft, selectedAgent]);
 
   const getAgentName = (agentId: string) => {
     const names: Record<string, string> = {
@@ -709,6 +808,66 @@ export default function ChatArea({
                         </button>
                       </div>
                       <div style={{ padding: '24px 28px', fontSize: '15px', lineHeight: '1.6', color: '#1e293b' }}>
+                        {editingPlanId === message.id ? (
+                          <>
+                            <textarea
+                              value={planDraft}
+                              onChange={(e) => setPlanDraft(e.target.value)}
+                              spellCheck={false}
+                              style={{
+                                width: '100%',
+                                minHeight: '480px',
+                                resize: 'vertical',
+                                padding: '14px 16px',
+                                border: '1px solid #c7d2fe',
+                                borderRadius: '8px',
+                                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                                fontSize: '13px',
+                                lineHeight: '1.6',
+                                color: '#1e293b',
+                                backgroundColor: '#fbfcff',
+                                outline: 'none',
+                                boxSizing: 'border-box',
+                              }}
+                            />
+                            <div style={{ fontSize: '12px', color: '#64748b', marginTop: '8px' }}>
+                              Editing markdown — headings (#), <strong>**bold**</strong> and tables (|) render after saving.
+                            </div>
+                            {planSaveError && (
+                              <div style={{
+                                marginTop: '10px', padding: '10px 12px', borderRadius: '6px',
+                                backgroundColor: '#fef2f2', border: '1px solid #fecaca',
+                                color: '#b91c1c', fontSize: '13px'
+                              }}>
+                                {planSaveError}
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '16px' }}>
+                              <button
+                                onClick={() => { setEditingPlanId(null); setPlanSaveError(null); }}
+                                disabled={isSavingPlan}
+                                style={{
+                                  padding: '10px 18px', borderRadius: '8px', fontSize: '14px', fontWeight: 600,
+                                  border: '1px solid #cbd5e1', backgroundColor: 'white', color: '#475569',
+                                  cursor: isSavingPlan ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleSavePlan(message.id)}
+                                disabled={isSavingPlan}
+                                style={{
+                                  padding: '10px 22px', borderRadius: '8px', fontSize: '14px', fontWeight: 600,
+                                  border: 'none', backgroundColor: isSavingPlan ? '#a5b4fc' : '#6366f1',
+                                  color: 'white', cursor: isSavingPlan ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                {isSavingPlan ? 'Saving…' : '💾 Save'}
+                              </button>
+                            </div>
+                          </>
+                        ) : (
                         <ReactMarkdown
                           remarkPlugins={[remarkGfm]}
                           components={{
@@ -735,6 +894,7 @@ export default function ChatArea({
                         >
                           {message.content}
                         </ReactMarkdown>
+                        )}
                       </div>
                     </div>
                   </div>
