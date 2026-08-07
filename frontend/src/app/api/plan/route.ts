@@ -70,3 +70,65 @@ export async function GET(request: Request) {
     );
   }
 }
+
+// Persist a user-edited plan. Proxies to the backend rather than writing via the
+// browser's Supabase client: RLS blocks the anon key on business_plans (anon
+// SELECT returns 0 rows while the service role sees every row), so a direct
+// client-side write would silently succeed while changing nothing.
+export async function POST(request: Request) {
+  let body: { thread_id?: string; user_id?: number | string; markdown?: string; agent_id?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ success: false, message: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const { thread_id, user_id, markdown } = body;
+  const agentId = body.agent_id || 'xbuddy';
+
+  if (!thread_id || user_id === undefined || user_id === null || typeof markdown !== 'string') {
+    return Response.json(
+      { success: false, message: 'thread_id, user_id and markdown are required' },
+      { status: 400 }
+    );
+  }
+
+  const isLocal = process.env.NEXT_PUBLIC_API_ENV === 'local';
+  const apiUrl =
+    process.env.NEXT_PUBLIC_API_URL ||
+    (isLocal
+      ? process.env.VALUE_CANVAS_API_URL_LOCAL
+      : process.env.VALUE_CANVAS_API_URL_PRODUCTION);
+
+  if (!apiUrl) {
+    return Response.json({ success: false, message: 'Backend API URL not configured' }, { status: 500 });
+  }
+
+  try {
+    const response = await fetch(`${apiUrl}/business_plan/${agentId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.VALUE_CANVAS_API_TOKEN && {
+          Authorization: `Bearer ${process.env.VALUE_CANVAS_API_TOKEN}`,
+        }),
+      },
+      body: JSON.stringify({ user_id: Number(user_id), thread_id, markdown }),
+      cache: 'no-store',
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return Response.json(
+        { success: false, message: data?.detail || `Backend returned ${response.status}` },
+        { status: 502 }
+      );
+    }
+    return Response.json({ success: true, ...data }, { status: 200 });
+  } catch (error) {
+    return Response.json(
+      { success: false, message: error instanceof Error ? error.message : 'Failed to save plan' },
+      { status: 502 }
+    );
+  }
+}

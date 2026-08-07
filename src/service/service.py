@@ -42,6 +42,7 @@ from schema import (
     FeedbackResponse,
     InvokeResponse,
     RefineSectionInput,
+    SaveBusinessPlanInput,
     ServiceMetadata,
     StreamInput,
     UserInput,
@@ -1859,6 +1860,44 @@ async def get_business_plan(
         logger.error(f"=== GET_BUSINESS_PLAN_ERROR ===")
         logger.error(f"GET_BUSINESS_PLAN_ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get business plan: {str(e)}")
+
+
+@router.post("/business_plan/{agent_id}")
+async def save_business_plan(agent_id: str, body: SaveBusinessPlanInput):
+    """Persist a user-edited final plan back to Supabase business_plans.
+
+    Straight write, no LLM: the plan card is edited in place in the UI and saved
+    here. This goes through the backend rather than the browser's Supabase client
+    on purpose — RLS blocks the anon key on business_plans (verified: anon SELECT
+    returns 0 rows while the service role sees every row), so a direct client-side
+    write would silently no-op.
+    """
+    if agent_id != "xbuddy":
+        raise HTTPException(
+            status_code=422,
+            detail="Business plan saving only supported for 'xbuddy' agent",
+        )
+
+    logger.info(
+        f"SAVE_BUSINESS_PLAN: user_id={body.user_id}, thread_id={body.thread_id}, "
+        f"length={len(body.markdown)}"
+    )
+    try:
+        from integrations.supabase.supabase_client import SupabaseClient
+
+        # content and markdown_content are both plain markdown here, matching what
+        # implementation.py writes when it first generates the plan.
+        SupabaseClient().save_business_plan(
+            user_id=body.user_id,
+            thread_id=body.thread_id,
+            content=body.markdown,
+            markdown_content=body.markdown,
+            agent_id="fitness-buddy",
+        )
+        return {"success": True, "message": "Plan saved"}
+    except Exception as e:
+        logger.error(f"SAVE_BUSINESS_PLAN_ERROR: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save plan: {e}")
 
 
 @router.post("/generate_business_plan/{agent_id}")

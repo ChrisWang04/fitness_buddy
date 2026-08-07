@@ -221,6 +221,23 @@ class InvokeResponse(BaseModel):
     )
 
 
+class SaveBusinessPlanInput(BaseModel):
+    """Input for saving a user-edited final plan back to business_plans."""
+
+    user_id: int = Field(
+        description="User identifier.",
+        examples=[1, 123],
+    )
+    thread_id: str = Field(
+        description="Thread/conversation identifier.",
+        min_length=1,
+        examples=["847c6285-8fc9-4560-a83f-4e6285809254"],
+    )
+    markdown: str = Field(
+        description="The full edited plan markdown to persist.",
+    )
+
+
 class RefineSectionInput(BaseModel):
     """Input for refining a section with AI."""
 
