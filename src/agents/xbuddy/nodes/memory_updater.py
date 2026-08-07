@@ -211,6 +211,11 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
     )
     awaiting_answer_on_last = (
         is_last_section
+        # Only meaningful on a turn the user actually spoke in. The loop-back pass
+        # that opens this section also ends in a question, and without this it
+        # burned the single deferral below on a turn where nothing could fire
+        # anyway — leaving the guard already spent when the user finally answered.
+        and has_fresh_user_input
         and reply_asks_question
         and not explicit_user_done
         # Only ever hold back once, so a last section that keeps asking questions
