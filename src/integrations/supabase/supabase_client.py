@@ -112,14 +112,20 @@ class SupabaseClient:
     ) -> Optional[dict]:
         """Get business plan from Supabase (synchronous operation)."""
         try:
+            # NOT maybe_single(): postgrest answers 406 for it when no row exists
+            # yet, which surfaced as "Error getting business plan: 'NoneType' object
+            # has no attribute 'data'" on every poll made while the plan was still
+            # generating. A plain select + limit(1) makes "not there yet" an ordinary
+            # empty result instead of an error.
             result = self.client.table("business_plans")\
                 .select("*")\
                 .eq("user_id", user_id)\
                 .eq("thread_id", thread_id)\
-                .maybe_single()\
+                .limit(1)\
                 .execute()
-            
-            return result.data if result.data else None
+
+            rows = result.data or []
+            return rows[0] if rows else None
         except Exception as e:
             logger.error(f"Error getting business plan: {e}")
             return None

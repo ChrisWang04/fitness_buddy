@@ -57,6 +57,12 @@ warnings.filterwarnings("ignore", category=LangChainBetaWarning)
 logger = get_logger(__name__)
 
 
+# Strong references to graph runs that outlived their SSE connection. Without a
+# reference the event loop can garbage-collect a still-pending task ("Task was
+# destroyed but it is pending!"), killing the run.
+_detached_runs: set[asyncio.Task] = set()
+
+
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Middleware to log all incoming frontend requests with detailed information."""
     
@@ -823,7 +829,24 @@ async def message_generator(
         logger.error(f"[STREAM ERROR TRACEBACK]\n{traceback.format_exc()}")
         yield f"data: {json.dumps({'type': 'error', 'content': 'Internal server error'})}\n\n"
     finally:
-        _pump_task.cancel()
+        # Deliberately do NOT cancel the graph here.
+        #
+        # On Vercel Hobby the /api/chat function is killed at 60s while plan
+        # generation needs ~80s, so this finally runs *mid-generation* on a
+        # disconnect. Cancelling took the whole graph down with it: the plan was
+        # never finished and never persisted (observed as "Task was destroyed but
+        # it is pending!" from langgraph's internal queue), leaving the card stuck
+        # with only the chunks that had already streamed and nothing in the
+        # database for the recovery poll to find. Letting the run finish in the
+        # background is the entire premise of that fallback.
+        if _pump_task.done():
+            _pump_task_exc = _pump_task.exception() if not _pump_task.cancelled() else None
+            if _pump_task_exc:
+                logger.error(f"[STREAM] graph run failed: {_pump_task_exc}")
+        else:
+            _detached_runs.add(_pump_task)
+            _pump_task.add_done_callback(_detached_runs.discard)
+            logger.info("[STREAM] client gone; letting the graph finish and persist in background")
         # Fetch the final graph state once, then emit section data and (if the
         # conversation finished) the final plan as INDEPENDENT guarded blocks, so a
         # failure serializing one never suppresses the other.
