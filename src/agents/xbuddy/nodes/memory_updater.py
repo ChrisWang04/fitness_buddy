@@ -225,6 +225,14 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
     )
     if awaiting_answer_on_last:
         updates["finish_deferred_once"] = True
+        # End the turn here. Without this the directive is still NEXT, so the graph
+        # loops back through router into generate_reply and appends a SECOND reply
+        # that wraps up and announces "your plan is on its way!" — directly
+        # contradicting the question we just deferred for, and promising a plan
+        # that won't arrive until the user sends another message. STAY leaves
+        # route_decision with no pending user input, which ends the turn cleanly
+        # on the follow-up question.
+        updates["router_directive"] = RouterDirective.STAY.value
 
     # Both routes to the plan have to respect the deferral — gating only the
     # section status left finish_on_last firing straight past it.
