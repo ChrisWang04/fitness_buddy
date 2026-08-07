@@ -1,0 +1,17 @@
+.venv
+node_modules
+frontend
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+.next
+scratch_*.py
+evals
+tests
+.env
+.env.*
+supabase
+docs
+*.md

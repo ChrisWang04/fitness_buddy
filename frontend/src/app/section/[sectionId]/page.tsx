@@ -7,10 +7,11 @@ import { supabase } from '@/lib/supabase';
 
 // Section ID mapping
 const SECTION_NAMES: Record<string, string> = {
-  mission: 'Mission',
-  idea: 'Idea',
-  team_traction: 'Team & Traction',
-  invest_plan: 'Investment Plan',
+  goals: 'Goals',
+  profile: 'Profile',
+  schedule: 'Schedule',
+  preferences: 'Preferences',
+  nutrition: 'Nutrition',
 };
 
 function SectionEditorContent() {

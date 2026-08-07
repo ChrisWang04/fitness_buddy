@@ -7,17 +7,21 @@ https://github.com/Victoria824/FounderBuddy/blob/main/src/agents/founder_buddy/g
 
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 
 from ..enums import RouterDirective
 from ..models import XBuddyState
 
 
 def route_after_memory_updater(state: XBuddyState) -> Literal["implementation", "router"]:
-    """Route after memory_updater — generate final output or loop back.
+    """Route after memory_updater — generate the final plan, or loop back to router.
 
-    TODO: This checks should_generate_final_output. Make sure your
-    memory_updater sets this flag when all sections are complete.
+    Matches the FounderBuddy reference: when all sections are complete, go to
+    implementation to synthesize the plan; otherwise loop back to router. The
+    loop lets an advance (router_directive == NEXT) take effect the SAME turn —
+    router re-resolves to the next section and generate_reply emits its opener.
+    (This is safe from the assistant-prefill crash because generate_reply never
+    passes the model a message list that ends on an AIMessage.)
     """
     if state.get("should_generate_final_output", False):
         return "implementation"

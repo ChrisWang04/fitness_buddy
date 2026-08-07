@@ -92,7 +92,7 @@ def langchain_to_chat_message(message: BaseMessage) -> ChatMessage:
                     # Removed: DentApp integration
 
                     # Map section string ID to database integer ID
-                    section_id_int = SECTION_ID_MAPPING.get(section_id_str)
+                    section_id_int = None  # xbuddy has no section->DB-id mapping
 
                     # Get section name using helper function
                     section_name = _get_section_name(agent_name, section_id_str)
@@ -126,7 +126,7 @@ def langchain_to_chat_message(message: BaseMessage) -> ChatMessage:
                     # Removed: DentApp integration
 
                     # Map section string ID to database integer ID
-                    section_id_int = SECTION_ID_MAPPING.get(section_id_str)
+                    section_id_int = None  # xbuddy has no section->DB-id mapping
 
                     # Get section name using helper function
                     section_name = _get_section_name(agent_name, section_id_str)

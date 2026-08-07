@@ -13,6 +13,7 @@ import logging
 
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 
 from core.llm import get_model
 
@@ -23,6 +24,10 @@ from ..prompts import get_section_template
 logger = logging.getLogger(__name__)
 
 AGENT_ID = "fitness-buddy"
+
+# The final plan is long (overview + weekly table + per-day exercise tables +
+# nutrition + tips); the default 3000-token cap truncates it mid-sentence.
+PLAN_MAX_TOKENS = 8000
 
 PLAN_PROMPT = """You are FitnessBuddy. The user has finished all five sections. Using ONLY the
 collected information below, write a clear, structured, personalized training + nutrition plan.
@@ -79,15 +84,53 @@ async def implementation_node(state: XBuddyState, config: RunnableConfig) -> dic
         lines.append(f"- {get_section_template(sid).name}: {summary.strip() or '(not provided)'}")
     collected = "\n".join(lines)
 
-    model = get_model()  # Sonnet — quality matters for the final artifact
-    resp = await model.ainvoke([HumanMessage(content=PLAN_PROMPT.format(collected=collected))], config)
-    plan = _text(resp.content).strip()
+    # Sonnet — quality matters for the final artifact. The full plan (overview +
+    # weekly table + per-day exercise tables + nutrition + tips) is long, so raise
+    # max_tokens for THIS call only (get_model() is @cache'd, so bind instead of
+    # mutating the shared instance; Sonnet 4.x allows well above this).
+    model = get_model().bind(max_tokens=PLAN_MAX_TOKENS)
+    # Tag skip_stream so the plan's tokens are NOT pushed onto the user-facing SSE
+    # *token* stream — otherwise they'd stream token-by-token into the same chat
+    # bubble as generate_reply's reply and concatenate with it.
+    skip_cfg = {**(config or {}), "tags": [*((config or {}).get("tags") or []), "skip_stream"]}
+
+    # Stream the plan out as it's written, via a dedicated custom event.
+    #
+    # This node is the longest call in the app (60-90s). Buffering it and shipping
+    # the whole thing as a single event at the very end made delivery all-or-
+    # nothing: the connection sat completely silent the entire time (so every
+    # proxy/function timeout in the path got a chance to kill it), and any failure
+    # lost 100% of the plan. Emitting chunks as they arrive keeps bytes flowing
+    # continuously and lets the card fill in live, which is also just better UX
+    # than staring at nothing for a minute and a half.
+    #
+    # These go out as "custom" stream events (not token events), so the frontend
+    # can route them into the standalone plan card instead of the chat bubble.
+    writer = get_stream_writer()
+    chunks: list[str] = []
+    async for chunk in model.astream(
+        [HumanMessage(content=PLAN_PROMPT.format(collected=collected))], skip_cfg
+    ):
+        text = _text(chunk.content)
+        if not text:
+            continue
+        chunks.append(text)
+        if writer:
+            writer({"type": "final_plan_chunk", "content": text})
+    plan = "".join(chunks).strip()
 
     _persist_plan(state.get("user_id", 1), state.get("thread_id", ""), plan)
 
     logger.info("implementation | plan generated (%d chars)", len(plan))
+    # Deliberately do NOT return the plan in "messages": that would emit a
+    # 'message' SSE event whose content overwrites the reply bubble with raw plan
+    # markdown. The plan reaches the client only via the dedicated 'final_plan'
+    # SSE event (emitted from final_output in service.py), rendered as a big card.
     return {
-        "messages": [resp],
         "final_output": plan,
         "finished": True,
+        # Reset the trigger — otherwise it stays True in checkpointed state and
+        # every subsequent user message re-enters this node (re-running the
+        # expensive Sonnet call and overwriting final_output with a new plan).
+        "should_generate_final_output": False,
     }

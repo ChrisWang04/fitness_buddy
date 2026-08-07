@@ -2,12 +2,22 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { conversationStorage, ConversationRecord } from '@/utils/conversationStorage';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  // When true, this message is the finished FitnessBuddy plan and is rendered as
+  // a distinct full-width card (with GFM markdown incl. tables), not a chat bubble.
+  isFinalPlan?: boolean;
+  // True while the plan card is still being appended to from final_plan_chunk
+  // events; cleared once the terminal final_plan event settles it.
+  isStreaming?: boolean;
+  // True while we're polling for the persisted plan after the stream was cut
+  // short (Vercel's 60s function cap) — drives the "finishing your plan" state.
+  isRecovering?: boolean;
 }
 
 interface Section {
@@ -25,6 +35,9 @@ interface ChatAreaProps {
   currentSection: Section | null;
   onThreadIdChange: (threadId: string) => void;
   onSectionUpdate: (section: Section) => void;
+  // Incremented by the sidebar's "Edit Full Final Output" button; each bump puts
+  // the plan card into in-place edit mode.
+  editPlanSignal?: number;
 }
 
 export default function ChatArea({
@@ -35,7 +48,8 @@ export default function ChatArea({
   loadedMessages,
   currentSection,
   onThreadIdChange,
-  onSectionUpdate
+  onSectionUpdate,
+  editPlanSignal
 }: ChatAreaProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -44,7 +58,14 @@ export default function ChatArea({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
   const [isGeneratingLLM, setIsGeneratingLLM] = useState(false);
-  const [isAutoMode, setIsAutoMode] = useState(false);
+  const [isAutoMode, setIsAutoMode] = useState(false);  // auto-conversation button removed; setter still used to reset on thread switch
+  // In-place plan editing: id of the plan message being edited, its working copy,
+  // and save status. The plan is markdown, so the editable view is the markdown
+  // SOURCE — lossless, unlike round-tripping rendered HTML.
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [planDraft, setPlanDraft] = useState<string>('');
+  const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [planSaveError, setPlanSaveError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const autoModeRef = useRef(false);
@@ -92,6 +113,42 @@ export default function ChatArea({
     }
   }, [loadedMessages, threadId]);
 
+  // business_plans is the source of truth for the final plan. The conversation is
+  // restored from localStorage, so an edit made on another device/session (or a
+  // plan finished by the recovery poll) would otherwise show a stale card. On
+  // load, reconcile the plan card against the persisted copy.
+  useEffect(() => {
+    if (!threadId || !userId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/plan?thread_id=${encodeURIComponent(threadId)}&user_id=${encodeURIComponent(
+            String(userId)
+          )}&agent_id=${encodeURIComponent(selectedAgent || 'xbuddy')}`
+        );
+        const data = await res.json();
+        const markdown = data?.business_plan || data?.markdown_content || '';
+        if (cancelled || !data?.success || !markdown) return;
+        setMessages(prev => {
+          const idx = prev.findIndex(m => m.isFinalPlan);
+          // Don't clobber a card that's mid-stream or being edited right now.
+          if (idx === -1 || prev[idx].isStreaming || prev[idx].content === markdown) return prev;
+          if (editingPlanId === prev[idx].id) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], content: markdown };
+          return next;
+        });
+      } catch {
+        // Offline or backend hiccup — keep whatever the conversation already has.
+      }
+    })();
+    return () => { cancelled = true; };
+    // Intentionally keyed on the conversation, not on `messages`: this is a
+    // load-time reconciliation, not a live sync.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId, userId, selectedAgent, loadedMessages]);
+
   // Save conversation to localStorage when messages or threadId changes
   useEffect(() => {
     if (threadId && messages.length > 0) {
@@ -132,19 +189,137 @@ export default function ChatArea({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, isAutoMode, isLoading, isGeneratingLLM]);
 
+  // Sidebar "Edit Full Final Output" pressed -> put the plan card into edit mode
+  // in place. Edits the markdown source, which is exactly what's persisted.
+  useEffect(() => {
+    if (!editPlanSignal) return;
+    setMessages(prev => {
+      const plan = [...prev].reverse().find(m => m.isFinalPlan && !m.isStreaming);
+      if (plan) {
+        setEditingPlanId(plan.id);
+        setPlanDraft(plan.content);
+        setPlanSaveError(null);
+      }
+      return prev;
+    });
+  }, [editPlanSignal]);
+
+  // Persist the edited plan. Straight DB write via /api/plan (no LLM, no
+  // regeneration): the backend owns the write because RLS blocks the anon key on
+  // business_plans. On success the card content is updated locally too, which the
+  // localStorage effect above picks up, so a reload shows the edited version.
+  const handleSavePlan = useCallback(async (messageId: string) => {
+    if (!threadId || !userId) {
+      setPlanSaveError('Missing conversation id — cannot save.');
+      return;
+    }
+    setIsSavingPlan(true);
+    setPlanSaveError(null);
+    try {
+      const res = await fetch('/api/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          thread_id: threadId,
+          user_id: userId,
+          markdown: planDraft,
+          agent_id: selectedAgent || 'xbuddy',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.message || `Save failed (${res.status})`);
+      }
+      setMessages(prev =>
+        prev.map(m => (m.id === messageId ? { ...m, content: planDraft } : m))
+      );
+      setEditingPlanId(null);
+    } catch (err) {
+      setPlanSaveError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setIsSavingPlan(false);
+    }
+  }, [threadId, userId, planDraft, selectedAgent]);
+
   const getAgentName = (agentId: string) => {
     const names: Record<string, string> = {
-      'xbuddy': 'XBuddy'
+      'xbuddy': 'FitnessBuddy'
     };
     return names[agentId] || 'AI Agent';
   };
 
   const getPlaceholderText = (agentId: string) => {
     const placeholders: Record<string, string> = {
-      'xbuddy': 'Try: "I want to validate my startup idea"'
+      'xbuddy': 'Try: "I want to build a workout plan"'
     };
     return placeholders[agentId] || 'Type your message...';
   };
+
+  // Fill the plan card from the persisted copy when the SSE stream got cut short.
+  //
+  // On Vercel Hobby the /api/chat function is hard-capped at 60s while plan
+  // generation takes ~80s, so the stream dies mid-plan and the card would be left
+  // with truncated markdown. The Fly backend keeps going and saves the finished
+  // plan to Supabase — but not until ~20s AFTER the proxy died, so a single fetch
+  // would usually be too early. Poll until it lands, then settle the card with the
+  // complete text.
+  const recoverFinalPlan = useCallback(async (recoveryThreadId: string | null) => {
+    if (!recoveryThreadId || !userId) return;
+
+    // Mark the truncated card as still finishing so the user sees progress
+    // rather than a plan that just stops mid-sentence.
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = { ...next[idx], isRecovering: true };
+      return next;
+    });
+
+    const POLL_INTERVAL_MS = 3000;
+    const MAX_WAIT_MS = 45000;
+    const deadline = Date.now() + MAX_WAIT_MS;
+
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+      try {
+        const res = await fetch(
+          `/api/plan?thread_id=${encodeURIComponent(recoveryThreadId)}&user_id=${encodeURIComponent(
+            String(userId)
+          )}&agent_id=${encodeURIComponent(selectedAgent || 'xbuddy')}`
+        );
+        const data = await res.json();
+        const markdown = data?.business_plan || data?.markdown_content || '';
+        if (data?.success && markdown) {
+          setMessages(prev => {
+            const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+            if (idx === -1) return prev;
+            const next = [...prev];
+            next[idx] = {
+              ...next[idx],
+              content: markdown,
+              isStreaming: false,
+              isRecovering: false,
+            };
+            return next;
+          });
+          return;
+        }
+      } catch {
+        // Transient failure — keep polling until the deadline.
+      }
+    }
+
+    // Gave up waiting: stop showing the "finishing" state so the card isn't
+    // stuck pretending it's still working.
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = { ...next[idx], isStreaming: false, isRecovering: false };
+      return next;
+    });
+  }, [userId, selectedAgent]);
 
   // Extract send message logic
   const handleSendMessage = useCallback(async (messageContent: string) => {
@@ -159,6 +334,13 @@ export default function ChatArea({
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
+
+    // Plan-delivery tracking. Declared out here (not inside the streaming block)
+    // so the catch below can tell a genuine connection failure from the expected
+    // mid-plan cutoff on Vercel Hobby, which the recovery poll already handles.
+    let planStreamStarted = false;
+    let planCompleted = false;
+    let activeThreadId: string | null = threadId;
 
     try {
       const requestPayload = {
@@ -257,19 +439,84 @@ export default function ChatArea({
                   });
                 } else if (parsed.type === 'metadata') {
                   // Handle metadata event - extract thread_id
-                  if (parsed.content && parsed.content.thread_id && !threadId) {
-                    onThreadIdChange(parsed.content.thread_id);
+                  if (parsed.content && parsed.content.thread_id) {
+                    // Capture locally too: the recovery poll needs the thread id
+                    // even on the turn where the `threadId` prop is still null.
+                    activeThreadId = parsed.content.thread_id;
+                    if (!threadId) {
+                      onThreadIdChange(parsed.content.thread_id);
+                    }
                   }
                 } else if (parsed.type === 'message') {
                   // Skip duplicate message events - content is already handled via tokens
                   // The backend sends these but we don't need to process them
                 } else if (parsed.type === 'section') {
                   onSectionUpdate(parsed.content);
-                } else if (parsed.type === 'final_response') {
-                  // Handle final response if needed
-                  if (parsed.threadId && !threadId) {
-                    onThreadIdChange(parsed.threadId);
+                } else if (parsed.type === 'final_plan_chunk') {
+                  // The plan streams in as it's written. Append each chunk into a
+                  // single card so it fills in live, instead of waiting 60-90s for
+                  // one all-or-nothing payload at the end.
+                  const chunk = parsed.content || '';
+                  if (chunk) {
+                    planStreamStarted = true;
+                    setMessages(prev => {
+                      const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+                      if (idx === -1) {
+                        return [
+                          ...prev,
+                          {
+                            id: Date.now().toString() + '-final-plan',
+                            role: 'assistant',
+                            content: chunk,
+                            isFinalPlan: true,
+                            isStreaming: true,
+                          },
+                        ];
+                      }
+                      const next = [...prev];
+                      next[idx] = { ...next[idx], content: next[idx].content + chunk };
+                      return next;
+                    });
                   }
+                } else if (parsed.type === 'final_plan') {
+                  // The finished plan arrives as its own event (never streamed as
+                  // tokens). Render it as a standalone big card, NOT glued to the
+                  // preceding "does that sound right?" reply bubble.
+                  const markdown = parsed.content?.markdown || '';
+                  if (markdown) {
+                    planCompleted = true;
+                    setMessages(prev => {
+                      // The plan normally arrives via final_plan_chunk; this event
+                      // is the authoritative full text that closes it out. Settle
+                      // the streamed card with it (covers any dropped chunk) rather
+                      // than appending a second copy.
+                      const idx = prev.findIndex(m => m.isFinalPlan && m.isStreaming);
+                      if (idx !== -1) {
+                        const next = [...prev];
+                        next[idx] = { ...next[idx], content: markdown, isStreaming: false };
+                        return next;
+                      }
+                      // De-dupe: a reconnect/retry can re-emit final_plan; don't add
+                      // a second identical card.
+                      return prev.some(m => m.isFinalPlan && m.content === markdown)
+                        ? prev
+                        : [
+                            ...prev,
+                            {
+                              id: Date.now().toString() + '-final-plan',
+                              role: 'assistant',
+                              content: markdown,
+                              isFinalPlan: true,
+                            },
+                          ];
+                    });
+                  }
+                } else if (parsed.type === 'final_response') {
+                  // Thread identity is owned solely by the 'metadata' event.
+                  // Do NOT set threadId here: final_response may carry a
+                  // per-request id, and the stale render-closure `threadId`
+                  // (still null within turn 1) would let it clobber the correct
+                  // thread_id, fragmenting the conversation across thread_ids.
                   if (parsed.section) {
                     onSectionUpdate(parsed.section);
                   }
@@ -291,23 +538,37 @@ export default function ChatArea({
         reader.releaseLock();
         // Ensure loading is set to false when stream ends
         setIsLoading(false);
+        // The plan began streaming but the terminal final_plan never arrived —
+        // the proxy's function timeout cut us off mid-plan. Recover the finished
+        // copy from the backend so the card never ends truncated. Runs for the
+        // abrupt-kill path and the normal [DONE] path alike (on a healthy stream
+        // planCompleted is true, so this is a no-op).
+        if (planStreamStarted && !planCompleted) {
+          await recoverFinalPlan(activeThreadId);
+        }
       }
 
     } catch (error) {
       console.error('Error:', error);
-      const errorMessage: Message = {
-        id: Date.now().toString() + '-error',
-        role: 'assistant',
-        content: `Sorry, an error occurred while connecting to ${getAgentName(selectedAgent)}. Please try again.`
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      // A mid-plan cutoff (Vercel Hobby's 60s function cap) surfaces here as a
+      // read error, but it isn't a failure the user needs to see: the recovery
+      // poll in the finally above already refilled the card from the persisted
+      // plan. Only show the generic error when the plan wasn't in flight.
+      if (!planStreamStarted) {
+        const errorMessage: Message = {
+          id: Date.now().toString() + '-error',
+          role: 'assistant',
+          content: `Sorry, an error occurred while connecting to ${getAgentName(selectedAgent)}. Please try again.`
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      }
       setIsLoading(false);
       // Stop auto mode on error
       if (isAutoMode) {
         setIsAutoMode(false);
       }
     }
-  }, [isLoading, selectedAgent, userId, threadId, mode, onThreadIdChange, onSectionUpdate, isAutoMode]);
+  }, [isLoading, selectedAgent, userId, threadId, mode, onThreadIdChange, onSectionUpdate, isAutoMode, recoverFinalPlan]);
 
   const handleAutoReply = useCallback(async (autoSend = false) => {
     if (isLoading || isGeneratingLLM || !selectedAgent || !userId) return;
@@ -436,7 +697,7 @@ export default function ChatArea({
                color: '#64748b',
                margin: '4px 0 0 0'
              }}>
-               {selectedAgent === 'xbuddy' && 'Validate and refine your startup idea'}
+               {selectedAgent === 'xbuddy' && 'Build a personalized training & nutrition plan'}
              </p>
            )}
          </div>
@@ -498,7 +759,148 @@ export default function ChatArea({
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {messages.map((message) => (
+            {messages.map((message) => {
+              // The finished plan renders as a distinct, full-width "big card"
+              // — not a normal chat bubble — with GFM markdown (tables included).
+              if (message.isFinalPlan) {
+                return (
+                  <div key={message.id} style={{ display: 'flex', justifyContent: 'stretch', width: '100%' }}>
+                    <div style={{
+                      width: '100%',
+                      border: '2px solid #6366f1',
+                      borderRadius: '16px',
+                      background: 'linear-gradient(180deg, #eef2ff 0%, #ffffff 120px)',
+                      boxShadow: '0 6px 20px rgba(99, 102, 241, 0.18)',
+                      overflow: 'hidden',
+                      position: 'relative'
+                    }}>
+                      <div style={{
+                        padding: '16px 24px',
+                        borderBottom: '1px solid #e0e7ff',
+                        background: '#6366f1',
+                        color: 'white',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between'
+                      }}>
+                        <span style={{ fontSize: '18px', fontWeight: 700 }}>
+                          {message.isRecovering
+                            ? '⏳ Finishing your plan…'
+                            : message.isStreaming
+                              ? '✍️ Writing your plan…'
+                              : '🎉 Your Personalized Plan'}
+                        </span>
+                        <button
+                          onClick={() => copyToClipboard(message.content, message.id)}
+                          style={{
+                            padding: '6px 12px',
+                            border: 'none',
+                            borderRadius: '6px',
+                            backgroundColor: copiedMessageId === message.id ? '#10b981' : 'rgba(255,255,255,0.2)',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            fontWeight: 600
+                          }}
+                          title={copiedMessageId === message.id ? 'Copied!' : 'Copy plan'}
+                        >
+                          {copiedMessageId === message.id ? '✓ Copied' : '📋 Copy'}
+                        </button>
+                      </div>
+                      <div style={{ padding: '24px 28px', fontSize: '15px', lineHeight: '1.6', color: '#1e293b' }}>
+                        {editingPlanId === message.id ? (
+                          <>
+                            <textarea
+                              value={planDraft}
+                              onChange={(e) => setPlanDraft(e.target.value)}
+                              spellCheck={false}
+                              style={{
+                                width: '100%',
+                                minHeight: '480px',
+                                resize: 'vertical',
+                                padding: '14px 16px',
+                                border: '1px solid #c7d2fe',
+                                borderRadius: '8px',
+                                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                                fontSize: '13px',
+                                lineHeight: '1.6',
+                                color: '#1e293b',
+                                backgroundColor: '#fbfcff',
+                                outline: 'none',
+                                boxSizing: 'border-box',
+                              }}
+                            />
+                            <div style={{ fontSize: '12px', color: '#64748b', marginTop: '8px' }}>
+                              Editing markdown — headings (#), <strong>**bold**</strong> and tables (|) render after saving.
+                            </div>
+                            {planSaveError && (
+                              <div style={{
+                                marginTop: '10px', padding: '10px 12px', borderRadius: '6px',
+                                backgroundColor: '#fef2f2', border: '1px solid #fecaca',
+                                color: '#b91c1c', fontSize: '13px'
+                              }}>
+                                {planSaveError}
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '16px' }}>
+                              <button
+                                onClick={() => { setEditingPlanId(null); setPlanSaveError(null); }}
+                                disabled={isSavingPlan}
+                                style={{
+                                  padding: '10px 18px', borderRadius: '8px', fontSize: '14px', fontWeight: 600,
+                                  border: '1px solid #cbd5e1', backgroundColor: 'white', color: '#475569',
+                                  cursor: isSavingPlan ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleSavePlan(message.id)}
+                                disabled={isSavingPlan}
+                                style={{
+                                  padding: '10px 22px', borderRadius: '8px', fontSize: '14px', fontWeight: 600,
+                                  border: 'none', backgroundColor: isSavingPlan ? '#a5b4fc' : '#6366f1',
+                                  color: 'white', cursor: isSavingPlan ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                {isSavingPlan ? 'Saving…' : '💾 Save'}
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            h1: ({ children }) => <h1 style={{ margin: '0 0 16px 0', fontSize: '24px', fontWeight: 700, color: '#3730a3' }}>{children}</h1>,
+                            h2: ({ children }) => <h2 style={{ margin: '24px 0 10px 0', fontSize: '19px', fontWeight: 700, color: '#4338ca', borderBottom: '1px solid #e0e7ff', paddingBottom: '4px' }}>{children}</h2>,
+                            h3: ({ children }) => <h3 style={{ margin: '16px 0 8px 0', fontSize: '16px', fontWeight: 700 }}>{children}</h3>,
+                            p: ({ children }) => <p style={{ margin: '0 0 12px 0' }}>{children}</p>,
+                            ul: ({ children }) => <ul style={{ margin: '0 0 12px 0', paddingLeft: '20px' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '0 0 12px 0', paddingLeft: '20px' }}>{children}</ol>,
+                            li: ({ children }) => <li style={{ margin: '4px 0' }}>{children}</li>,
+                            strong: ({ children }) => <strong style={{ fontWeight: 700 }}>{children}</strong>,
+                            em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                            table: ({ children }) => (
+                              <div style={{ overflowX: 'auto', margin: '8px 0 16px 0' }}>
+                                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '14px' }}>{children}</table>
+                              </div>
+                            ),
+                            thead: ({ children }) => <thead style={{ backgroundColor: '#eef2ff' }}>{children}</thead>,
+                            th: ({ children }) => <th style={{ border: '1px solid #c7d2fe', padding: '8px 10px', textAlign: 'left', fontWeight: 700 }}>{children}</th>,
+                            td: ({ children }) => <td style={{ border: '1px solid #e2e8f0', padding: '8px 10px', verticalAlign: 'top' }}>{children}</td>,
+                            code: ({ children }) => <code style={{ backgroundColor: '#f1f5f9', padding: '2px 4px', borderRadius: '3px', fontSize: '13px', fontFamily: 'monospace' }}>{children}</code>,
+                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #6366f1', paddingLeft: '12px', margin: '12px 0', fontStyle: 'italic', color: '#475569' }}>{children}</blockquote>,
+                          }}
+                        >
+                          {message.content}
+                        </ReactMarkdown>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              return (
               <div key={message.id} style={{
                 display: 'flex',
                 justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start'
@@ -527,6 +929,7 @@ export default function ChatArea({
                   }}>
                     {message.role === 'assistant' ? (
                       <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
                         components={{
                           p: ({ children }) => <p style={{ margin: '0 0 8px 0' }}>{children}</p>,
                           h1: ({ children }) => <h1 style={{ margin: '0 0 12px 0', fontSize: '18px', fontWeight: 'bold' }}>{children}</h1>,
@@ -596,7 +999,8 @@ export default function ChatArea({
                   )}
                 </div>
               </div>
-            ))}
+              );
+            })}
 
             {isLoading && (
               <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
@@ -707,56 +1111,6 @@ export default function ChatArea({
               <>
                 <span>🤖</span>
                 <span>Auto Reply</span>
-              </>
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (isAutoMode) {
-                setIsAutoMode(false);
-                // If generating LLM, stop it immediately
-                if (isGeneratingLLM) {
-                  setIsGeneratingLLM(false);
-                }
-              } else {
-                setIsAutoMode(true);
-                // Start the conversation if no messages yet
-                if (messages.length === 0) {
-                  handleAutoReply(true);
-                }
-              }
-            }}
-            disabled={!selectedAgent || !userId || (!isAutoMode && (isLoading || isGeneratingLLM))}
-            style={{
-              padding: '12px 20px',
-              backgroundColor: isAutoMode
-                ? '#dc2626'
-                : (!selectedAgent || !userId || isLoading || isGeneratingLLM)
-                  ? '#d1d5db'
-                  : '#8b5cf6',
-              color: 'white',
-              borderRadius: '8px',
-              border: 'none',
-              fontSize: '14px',
-              cursor: (!selectedAgent || !userId || (!isAutoMode && (isLoading || isGeneratingLLM))) ? 'not-allowed' : 'pointer',
-              fontWeight: '500',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'all 0.2s ease'
-            }}
-            title={isAutoMode ? "Stop auto conversation" : "Start auto conversation"}
-          >
-            {isAutoMode ? (
-              <>
-                <span>⏹️</span>
-                <span>Stop Auto</span>
-              </>
-            ) : (
-              <>
-                <span>▶️</span>
-                <span>Start Auto</span>
               </>
             )}
           </button>

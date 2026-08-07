@@ -77,6 +77,14 @@ class XBuddyData(BaseModel):
 
 class ChatAgentDecision(BaseModel):
     """Structured decision from the generate_decision node."""
+    reasoning: str = Field(
+        ...,
+        description=(
+            "One sentence: for EACH required field of the current section, has the "
+            "user given a value (even a rough one) anywhere in the conversation? "
+            "State this explicitly before deciding router_directive."
+        ),
+    )
     router_directive: str = Field(
         ...,
         description="Navigation control: 'stay', 'next', or 'modify:<section_id>'",
@@ -152,3 +160,7 @@ class XBuddyState(MessagesState):
     # Final output — TODO: rename to match your domain
     final_output: str | None = None
     should_generate_final_output: bool = False
+    # Set once memory_updater has held the final plan back for a turn so the user
+    # could answer a pending question. Bounds that to a single deferral, so a
+    # chatty last section can never stall the plan forever.
+    finish_deferred_once: bool = False

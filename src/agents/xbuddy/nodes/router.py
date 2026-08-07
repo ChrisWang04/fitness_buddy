@@ -2,7 +2,8 @@
 
 Reference: https://github.com/Victoria824/FounderBuddy/blob/main/src/agents/founder_buddy/nodes/router.py
 
-This node runs each turn before the reply is generated. It:
+This node runs each turn (and on every memory_updater→router loop-back) before the
+reply is generated. It:
   1. Reads the router_directive (STAY / NEXT / MODIFY:<section>) set by generate_decision.
   2. Updates current_section accordingly.
   3. Loads the context_packet (shared rules + section prompt + validation) for that section.
@@ -50,8 +51,14 @@ async def router_node(state: XBuddyState, config: RunnableConfig) -> dict:
         nxt = get_next_unfinished_section(section_states)
         if nxt is None:
             # Every section is done — signal the graph to generate the final plan.
-            updates["should_generate_final_output"] = True
-            logger.info("router | all sections done → final output")
+            # Skip once a plan already exists: otherwise any later message that
+            # resolves to NEXT (e.g. the user re-affirming "done") re-enters this
+            # branch and re-triggers a second, expensive plan generation — this is
+            # a second, independent path to the same flag as memory_updater's own
+            # guard, so it needs the same check.
+            if not state.get("finished"):
+                updates["should_generate_final_output"] = True
+                logger.info("router | all sections done → final output")
             return updates
         current = nxt
 

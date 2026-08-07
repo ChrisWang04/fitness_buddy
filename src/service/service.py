@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 
@@ -41,6 +42,7 @@ from schema import (
     FeedbackResponse,
     InvokeResponse,
     RefineSectionInput,
+    SaveBusinessPlanInput,
     ServiceMetadata,
     StreamInput,
     UserInput,
@@ -53,6 +55,12 @@ from service.utils import (
 
 warnings.filterwarnings("ignore", category=LangChainBetaWarning)
 logger = get_logger(__name__)
+
+
+# Strong references to graph runs that outlived their SSE connection. Without a
+# reference the event loop can garbage-collect a still-pending task ("Task was
+# destroyed but it is pending!"), killing the run.
+_detached_runs: set[asyncio.Task] = set()
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -300,26 +308,13 @@ async def _handle_input(user_input: UserInput, agent: AgentGraph, agent_id: str)
 
     initial_state = None
     if not thread_id:
-        # This is a new conversation, so we need to initialize a new state
-        if agent_id == "xbuddy":
-            initial_state = await initialize_xbuddy_state(user_id=user_id)
-        else:
+        # New conversation: mint a thread_id for LangGraph's checkpointer.
+        # State bootstrapping (section_states, current_section, identity) is
+        # handled by the graph's initialize_node from config on cold start.
+        if agent_id != "xbuddy":
             raise ValueError(f"Unknown agent: {agent_id}")
 
-        # Get the generated thread_id from initial_state
-        # For dict-like states, use .get(), for Pydantic models use direct access
-        logger.info(f"DEBUG: initial_state type = {type(initial_state)}")
-        logger.info(f"DEBUG: hasattr(initial_state, 'user_id') = {hasattr(initial_state, 'user_id')}")
-
-        if hasattr(initial_state, 'user_id'):
-            user_id = initial_state.user_id
-            thread_id = initial_state.thread_id
-            logger.info(f"DEBUG: Got user_id={user_id}, thread_id={thread_id} from Pydantic model")
-        else:
-            user_id = initial_state.get("user_id")
-            thread_id = initial_state.get("thread_id")
-            logger.info(f"DEBUG: Got user_id={user_id}, thread_id={thread_id} from dict")
-
+        thread_id = str(uuid4())
         logger.info(f"Initialized new thread with ID: {thread_id}")
     else:
         # This is an existing conversation, so we load the state
@@ -467,16 +462,20 @@ async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> Invoke
             current_section_enum = state.values["current_section"]
             current_section_id = current_section_enum.value  # Use the string value
             section_state = state.values.get("section_states", {}).get(current_section_id)
-            # Choose the right section templates based on agent_id
-            if agent_id == "xbuddy":
-                section_templates = FOUNDER_BUDDY_TEMPLATES
-            else:
+            # Resolve the section template from the agent's own registry.
+            # xbuddy has no section->DB-id mapping, so database_id stays None.
+            if agent_id != "xbuddy":
                 raise ValueError(f"Unknown agent: {agent_id}")
-            
-            section_template = section_templates.get(current_section_id)
+
+            from agents.xbuddy.prompts import get_section_template
+
+            try:
+                section_template = get_section_template(current_section_enum)
+            except (ValueError, TypeError):
+                section_template = None
 
             section_data = {
-                "database_id": SECTION_ID_MAPPING.get(current_section_id),
+                "database_id": None,
                 "name": section_template.name if section_template else "Unknown Section",
                 "status": section_state.status.value if section_state else "pending",
             }
@@ -548,17 +547,73 @@ async def message_generator(
 
     sent_message_count = 0  # Track the number of messages sent to prevent duplicates
 
+    # Long-running, non-streaming nodes (e.g. the final-plan generation, which is
+    # tagged skip_stream and can take 60-90s) emit no chunks while they run. Left
+    # as a plain `async for` over agent.astream(...), the connection goes fully
+    # silent for that whole window — long enough for the client's own idle-stream
+    # timeout to kill the connection before the plan ever arrives.
+    #
+    # Wrapping the `async for` loop itself in asyncio.wait_for() does NOT work
+    # here: LangGraph's astream() doesn't respond to task cancellation the way
+    # wait_for expects, so the timeout silently never fires (confirmed via local
+    # testing — an independent ticker task proved the event loop stayed free the
+    # whole time, yet wait_for(..., timeout=15) never raised even once over 80+
+    # seconds). Instead, consume astream() in its own background task that pushes
+    # every event onto a queue, and poll that queue with a timeout — the queue's
+    # own get() correctly honors asyncio timeouts regardless of the producer.
+    _event_queue: asyncio.Queue = asyncio.Queue()
+    _STREAM_DONE = object()
+
+    async def _pump_stream_events():
+        try:
+            async for ev in agent.astream(**kwargs, stream_mode=["updates", "messages", "custom"]):
+                await _event_queue.put(ev)
+        except Exception as exc:  # noqa: BLE001 — forward to the consumer, don't swallow
+            await _event_queue.put(exc)
+        finally:
+            await _event_queue.put(_STREAM_DONE)
+
+    _pump_task = asyncio.create_task(_pump_stream_events())
+
     try:
         # Send metadata as the first event in the stream
         thread_id = kwargs["config"]["configurable"]["thread_id"]
         user_id = kwargs["config"]["configurable"]["user_id"]
-        
+
         yield f"data: {json.dumps({'type': 'metadata', 'content': {'thread_id': thread_id, 'user_id': user_id, 'run_id': str(run_id)}})}\n\n"
-        
+
         # Process streamed events from the graph and yield messages over the SSE stream.
-        async for stream_event in agent.astream(
-            **kwargs, stream_mode=["updates", "messages", "custom"]
-        ):
+        #
+        # A fixed per-item timeout on _event_queue.get() is NOT enough: large
+        # max_tokens calls (e.g. implementation_node's plan generation) make the
+        # Anthropic SDK stream internally even though the node calls .ainvoke(),
+        # so LangGraph's astream() keeps emitting "messages" chunks the whole
+        # time — the queue never goes idle. Those chunks are correctly filtered
+        # out below (tagged skip_stream, so the raw plan text doesn't leak into
+        # the chat bubble), so none of them ever produce a real yield to the
+        # client, and the connection still looks idle from the client's side.
+        # Track time since the last REAL client-facing yield instead, and use a
+        # shrinking timeout so a heartbeat fires the moment that deadline is hit
+        # regardless of how many filtered-out items pass through in between.
+        last_yield_at = time.monotonic()
+        HEARTBEAT_SECONDS = 15
+        while True:
+            remaining = HEARTBEAT_SECONDS - (time.monotonic() - last_yield_at)
+            if remaining <= 0:
+                yield ": heartbeat\n\n"
+                last_yield_at = time.monotonic()
+                continue
+            try:
+                stream_event = await asyncio.wait_for(_event_queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                yield ": heartbeat\n\n"
+                last_yield_at = time.monotonic()
+                continue
+            if stream_event is _STREAM_DONE:
+                break
+            if isinstance(stream_event, Exception):
+                raise stream_event
+
             # Log stream events efficiently
             if isinstance(stream_event, tuple):
                 stream_mode, _ = stream_event
@@ -599,6 +654,14 @@ async def message_generator(
                             logger.debug(f"Sending {len(new_messages)} new messages")
 
             if stream_mode == "custom":
+                # Plan chunks stream out as their own SSE event so the frontend can
+                # append them into the standalone plan card. Handled here (and NOT
+                # passed into the message pipeline below) so they never land in the
+                # chat bubble as ordinary message content.
+                if isinstance(event, dict) and event.get("type") == "final_plan_chunk":
+                    yield f"data: {json.dumps({'type': 'final_plan_chunk', 'content': event.get('content', '')})}\n\n"
+                    last_yield_at = time.monotonic()
+                    continue
                 new_messages = [event]
 
             # LangGraph streaming may emit tuples: (field_name, field_value)
@@ -733,11 +796,13 @@ async def message_generator(
                     logger.error(f"❌ FAILED MESSAGE TYPE: {type(message).__name__}")
                     logger.error(f"❌ FAILED MESSAGE CONTENT: {repr(message)}")
                     yield f"data: {json.dumps({'type': 'error', 'content': 'Unexpected error'})}\n\n"
+                    last_yield_at = time.monotonic()
                     continue
                 # LangGraph re-sends the input message, which feels weird, so drop it
                 if chat_message.type == "human" and chat_message.content == user_input.message:
                     continue
                 yield f"data: {json.dumps({'type': 'message', 'content': chat_message.model_dump()})}\n\n"
+                last_yield_at = time.monotonic()
 
             if stream_mode == "messages":
                 if not user_input.stream_tokens:
@@ -757,50 +822,82 @@ async def message_generator(
                     # that the model is asking for a tool to be invoked.
                     # So we only print non-empty content.
                     yield f"data: {json.dumps({'type': 'token', 'content': convert_message_content_to_string(content)})}\n\n"
+                    last_yield_at = time.monotonic()
     except Exception as e:
         import traceback
         logger.error(f"[STREAM ERROR] {str(e)} (run_id={run_id}, agent={agent_id})")
         logger.error(f"[STREAM ERROR TRACEBACK]\n{traceback.format_exc()}")
         yield f"data: {json.dumps({'type': 'error', 'content': 'Internal server error'})}\n\n"
     finally:
-        # Always send section data at the end of the stream
+        # Deliberately do NOT cancel the graph here.
+        #
+        # On Vercel Hobby the /api/chat function is killed at 60s while plan
+        # generation needs ~80s, so this finally runs *mid-generation* on a
+        # disconnect. Cancelling took the whole graph down with it: the plan was
+        # never finished and never persisted (observed as "Task was destroyed but
+        # it is pending!" from langgraph's internal queue), leaving the card stuck
+        # with only the chunks that had already streamed and nothing in the
+        # database for the recovery poll to find. Letting the run finish in the
+        # background is the entire premise of that fallback.
+        if _pump_task.done():
+            _pump_task_exc = _pump_task.exception() if not _pump_task.cancelled() else None
+            if _pump_task_exc:
+                logger.error(f"[STREAM] graph run failed: {_pump_task_exc}")
+        else:
+            _detached_runs.add(_pump_task)
+            _pump_task.add_done_callback(_detached_runs.discard)
+            logger.info("[STREAM] client gone; letting the graph finish and persist in background")
+        # Fetch the final graph state once, then emit section data and (if the
+        # conversation finished) the final plan as INDEPENDENT guarded blocks, so a
+        # failure serializing one never suppresses the other.
+        final_state = None
         try:
-            state = await agent.aget_state(config=kwargs["config"])
-            if "current_section" in state.values:
-                current_section_enum = state.values["current_section"]
-                current_section_id = current_section_enum.value  # Use the string value
-                section_state = state.values.get("section_states", {}).get(current_section_id)
-                
-                # Choose the right section templates based on agent_id
-                if agent_id == "mission-pitch":
-                    section_templates = MISSION_PITCH_TEMPLATES
-                elif agent_id == "social-pitch":
-                    section_templates = SOCIAL_PITCH_TEMPLATES
-                elif agent_id == "signature-pitch":
-                    section_templates = SIGNATURE_PITCH_TEMPLATES
-                elif agent_id == "special-report":
-                    section_templates = SPECIAL_REPORT_TEMPLATES
-                elif agent_id == "concept-pitch":
-                    section_templates = CONCEPT_PITCH_TEMPLATES
-                elif agent_id == "xbuddy":
-                    section_templates = FOUNDER_BUDDY_TEMPLATES
-                else:  # default to value_canvas
-                    section_templates = VALUE_CANVAS_TEMPLATES
-                
-                section_template = section_templates.get(current_section_id)
-
-                section_data = {
-                    "database_id": SECTION_ID_MAPPING.get(current_section_id),
-                    "name": section_template.name if section_template else "Unknown Section",
-                    "status": section_state.status.value if section_state else "pending",
-                }
-                yield f"data: {json.dumps({'type': 'section', 'content': section_data})}\n\n"
+            final_state = await agent.aget_state(config=kwargs["config"])
         except Exception as e:
-            logger.error(f"Error getting section data: {e}")
+            logger.error(f"Error getting final state: {e}")
+
+        if final_state is not None:
+            # Section data
+            try:
+                if "current_section" in final_state.values:
+                    current_section_enum = final_state.values["current_section"]
+                    current_section_id = current_section_enum.value  # Use the string value
+                    section_state = final_state.values.get("section_states", {}).get(current_section_id)
+
+                    # xbuddy: resolve the section template from the agent's own
+                    # registry. No section->DB-id mapping exists, so database_id=None.
+                    if agent_id != "xbuddy":
+                        raise ValueError(f"Unknown agent: {agent_id}")
+
+                    from agents.xbuddy.prompts import get_section_template
+
+                    try:
+                        section_template = get_section_template(current_section_enum)
+                    except (ValueError, TypeError):
+                        section_template = None
+
+                    section_data = {
+                        "database_id": None,
+                        "name": section_template.name if section_template else "Unknown Section",
+                        "status": section_state.status.value if section_state else "pending",
+                    }
+                    yield f"data: {json.dumps({'type': 'section', 'content': section_data})}\n\n"
+            except Exception as e:
+                logger.error(f"Error getting section data: {e}")
+
+            # If the conversation just finished, deliver the completed plan as a
+            # DISTINCT event (not a chat message) so the client can render it as a
+            # standalone, full-width card rather than a normal streamed bubble.
+            # Independent of section data above.
+            try:
+                if final_state.values.get("finished") and final_state.values.get("final_output"):
+                    yield f"data: {json.dumps({'type': 'final_plan', 'content': {'markdown': final_state.values['final_output']}})}\n\n"
+            except Exception as e:
+                logger.error(f"Error emitting final plan: {e}")
 
         # Log stream completion
         logger.info(f"[STREAM] Complete: agent={agent_id}, thread={kwargs['config']['configurable']['thread_id'][:8]}...")
-        
+
         yield "data: [DONE]\n\n"
 
 
@@ -952,14 +1049,14 @@ async def notify_section_update(
     if not thread_id:
         raise HTTPException(status_code=422, detail="Missing required parameter: thread_id")
     
-    # Choose the right section templates based on agent_id
-    if agent_id == "xbuddy":
-        section_templates = FOUNDER_BUDDY_TEMPLATES
-    else:
+    # Validate the section against xbuddy's own section registry.
+    if agent_id != "xbuddy":
         raise ValueError(f"Unknown agent: {agent_id}")
-    
-    # Validate section_id
-    if section_id_str not in section_templates:
+
+    from agents.xbuddy.enums import SectionID
+
+    valid_section_ids = {s.value for s in SectionID}
+    if section_id_str not in valid_section_ids:
         raise HTTPException(status_code=422, detail=f"Unknown section_id: {section_id}")
 
     # Trigger a minimal graph run to refresh context
@@ -1786,6 +1883,44 @@ async def get_business_plan(
         logger.error(f"=== GET_BUSINESS_PLAN_ERROR ===")
         logger.error(f"GET_BUSINESS_PLAN_ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get business plan: {str(e)}")
+
+
+@router.post("/business_plan/{agent_id}")
+async def save_business_plan(agent_id: str, body: SaveBusinessPlanInput):
+    """Persist a user-edited final plan back to Supabase business_plans.
+
+    Straight write, no LLM: the plan card is edited in place in the UI and saved
+    here. This goes through the backend rather than the browser's Supabase client
+    on purpose — RLS blocks the anon key on business_plans (verified: anon SELECT
+    returns 0 rows while the service role sees every row), so a direct client-side
+    write would silently no-op.
+    """
+    if agent_id != "xbuddy":
+        raise HTTPException(
+            status_code=422,
+            detail="Business plan saving only supported for 'xbuddy' agent",
+        )
+
+    logger.info(
+        f"SAVE_BUSINESS_PLAN: user_id={body.user_id}, thread_id={body.thread_id}, "
+        f"length={len(body.markdown)}"
+    )
+    try:
+        from integrations.supabase.supabase_client import SupabaseClient
+
+        # content and markdown_content are both plain markdown here, matching what
+        # implementation.py writes when it first generates the plan.
+        SupabaseClient().save_business_plan(
+            user_id=body.user_id,
+            thread_id=body.thread_id,
+            content=body.markdown,
+            markdown_content=body.markdown,
+            agent_id="fitness-buddy",
+        )
+        return {"success": True, "message": "Plan saved"}
+    except Exception as e:
+        logger.error(f"SAVE_BUSINESS_PLAN_ERROR: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save plan: {e}")
 
 
 @router.post("/generate_business_plan/{agent_id}")

@@ -1,3 +1,11 @@
+// Final-plan generation is the longest call in the app (60-90s). Without this,
+// the route runs on Vercel's DEFAULT function timeout (10s Hobby / 15s Pro) —
+// a hard wall-clock cap that no amount of SSE heartbeating can extend, so the
+// plan was being cut off long before it finished. 60 is the maximum allowed on
+// Hobby; on Pro this can go up to 300 (deployment fails if it exceeds the plan's
+// limit, so raise it only after confirming the tier).
+export const maxDuration = 60;
+
 const logApiCall = (phase: string, data: Record<string, unknown>, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO') => {
   const timestamp = new Date().toISOString();
   const logLevel = process.env.NODE_ENV === 'development' ? 'DEBUG' : 'INFO';
@@ -384,14 +392,18 @@ export async function POST(req: Request) {
                   });
                   
                   // Handle different types of streaming data
-                  if (parsed.type === 'token') {
+                  if (parsed.type === 'metadata') {
+                    // The metadata event is the single source of truth for the
+                    // stable conversation thread_id. run_id is per-request and
+                    // must never be treated as the thread_id.
+                    if (parsed.content?.thread_id) {
+                      finalThreadId = parsed.content.thread_id;
+                    }
+                  } else if (parsed.type === 'token') {
                     tokenCount++;
                     finalContent += parsed.content;
                   } else if (parsed.type === 'message') {
                     finalContent = parsed.content.content || finalContent;
-                    if (parsed.content.run_id) {
-                      finalThreadId = parsed.content.run_id;
-                    }
                     if (parsed.content.custom_data) {
                       finalSection = parsed.content.custom_data.section;
                       finalUserId_response = parsed.content.custom_data.user_id;

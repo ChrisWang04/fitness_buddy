@@ -12,7 +12,7 @@ export async function GET() {
         agents: [
           {
             key: 'xbuddy',
-            description: 'A XBuddy agent that helps entrepreneurs validate and refine their startup ideas through structured conversations about mission, idea, team traction, and investment plan'
+            description: 'A FitnessBuddy agent that builds a personalized training and nutrition plan through a structured conversation about goals, profile, schedule, preferences, and nutrition'
           }
         ]
       };

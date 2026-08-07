@@ -24,6 +24,10 @@ export default function Chat() {
   const [loadedMessages, setLoadedMessages] = useState<Message[]>([]);
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [isBusinessPlanEditorOpen, setIsBusinessPlanEditorOpen] = useState<boolean>(false);
+  // Bumped when the sidebar's "Edit Full Final Output" is pressed. ChatArea watches
+  // this and flips the plan CARD itself into edit mode, in place — the old side
+  // panel is no longer how the final plan is edited.
+  const [editPlanSignal, setEditPlanSignal] = useState<number>(0);
 
   const handleAgentChange = (agentId: string) => {
     setSelectedAgent(agentId);
@@ -176,7 +180,7 @@ export default function Chat() {
               selectedAgent={selectedAgent}
               threadId={threadId}
               userId={userId}
-              onEditBusinessPlan={() => setIsBusinessPlanEditorOpen(true)}
+              onEditBusinessPlan={() => setEditPlanSignal((n) => n + 1)}
             />
           </div>
         )}
@@ -201,6 +205,7 @@ export default function Chat() {
         currentSection={currentSection}
         onThreadIdChange={handleThreadIdChange}
         onSectionUpdate={handleSectionUpdate}
+        editPlanSignal={editPlanSignal}
       />
 
       {/* Right Sidebar - Section Display Panel or Final Output Editor */}

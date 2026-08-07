@@ -49,11 +49,12 @@ const SECTION_DISPLAY_NAMES: Record<number | string, string> = {
   9002: 'Pitch Generation',
   9003: 'Pitch Selection',
   9004: 'Refinement',
-  // XBuddy sections
-  'mission': 'Mission',
-  'idea': 'Idea',
-  'team_traction': 'Team & Traction',
-  'invest_plan': 'Investment Plan',
+  // FitnessBuddy sections
+  'goals': 'Goals',
+  'profile': 'Profile',
+  'schedule': 'Schedule',
+  'preferences': 'Preferences',
+  'nutrition': 'Nutrition',
 };
 
 const REFINE_STYLES: Record<string, string> = {

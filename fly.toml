@@ -1,0 +1,23 @@
+# Fly.io config for the FitnessBuddy backend.
+# Change `app` to a globally-unique name before deploying (e.g. fitnessbuddy-chris).
+app = "fitnessbuddy-chris"
+primary_region = "sjc"   # pick one near you: sjc (US-west), iad (US-east), lhr, sin, ...
+
+[build]
+
+[env]
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  DATABASE_TYPE = "sqlite"
+  SQLITE_DB_PATH = "/tmp/xbuddy_checkpoints.db"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # Fly self-heals to keep >= min_machines_running up
+  auto_start_machines = true
+  min_machines_running = 1      # always keep one machine warm (no cold-start on requests)
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "2gb"                # a bit more headroom for the heavy import/startup

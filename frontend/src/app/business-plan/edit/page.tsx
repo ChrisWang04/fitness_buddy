@@ -39,7 +39,7 @@ function EditBusinessPlanContent() {
         {
           event: 'UPDATE',
           schema: 'public',
-          table: 'final-outputs',
+          table: 'business_plans',
           filter: `thread_id=eq.${threadId}`,
         },
         (payload) => {
@@ -78,7 +78,7 @@ function EditBusinessPlanContent() {
       console.log('Loading final-output:', { userId, threadId });
 
       const { data, error: fetchError } = await supabase
-        .from('final-outputs')
+        .from('business_plans')
         .select('content, markdown_content, updated_at')
         .eq('user_id', userId)
         .eq('thread_id', threadId)
@@ -221,7 +221,7 @@ function EditBusinessPlanContent() {
           console.log('Saving final-output:', { userId, threadId });
 
           const { data, error: saveError } = await supabase
-            .from('final-outputs')
+            .from('business_plans')
             .upsert({
               user_id: userId,
               thread_id: threadId,

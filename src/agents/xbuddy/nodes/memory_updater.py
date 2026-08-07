@@ -50,6 +50,46 @@ def _text(content) -> str:
     return content or ""
 
 
+# Reliable completion signals (mirrors FounderBuddy's memory_updater). The final
+# plan is triggered by the LLM's is_satisfied, OR — as a fallback on the LAST
+# section only — a clear "done" or "give me the plan" from the user. This keeps
+# the formatted plan card from being blocked when the Haiku decision is too
+# conservative to ever set is_satisfied. Navigation between sections is still
+# LLM-judged; these keywords only gate the final finish.
+_DONE_SIGNALS = (
+    "thats all", "that's all", "all done", "im done", "i'm done", "were done", "we're done",
+    "im finished", "i'm finished", "finished", "done", "thats it", "that's it", "good to go",
+    "im good", "i'm good", "were good", "we're good", "move on", "next", "proceed",
+    "wrap it up", "wrap up", "lets finish", "let's finish", "thats everything", "that's everything",
+    # Common affirmations that mean "I'm done, go ahead" — multi-word to stay safe
+    # (avoid bare "good"/"ok" which could appear inside a real answer). Sonnet's
+    # is_satisfied is the primary signal; these are just a safety net.
+    "all good", "its all good", "it's all good", "sounds good", "sounds great", "looks good",
+    "go ahead", "lets go", "let's go", "ready to go", "im ready", "i'm ready", "that works",
+)
+_PLAN_REQUESTS = (
+    "give me the plan", "give me my plan", "my plan", "full plan", "final plan", "the plan",
+    "workout plan", "training plan", "generate the plan", "generate my plan", "make the plan",
+    "build the plan", "show me the plan", "create the plan", "put my plan together",
+    "出计划", "计划", "给我计划",
+)
+
+
+def _last_user_text(history: list) -> str:
+    for m in reversed(history):
+        if isinstance(m, HumanMessage):
+            return _text(m.content).strip().lower()
+    return ""
+
+
+def _last_reply_text(history: list) -> str:
+    """The assistant reply generated this turn (history[-1] after generate_reply)."""
+    for m in reversed(history):
+        if isinstance(m, AIMessage):
+            return _text(m.content).strip()
+    return ""
+
+
 def _format_transcript(history: list) -> str:
     """Render the message history as a plain-text transcript for the summarizer."""
     lines = []
@@ -77,7 +117,11 @@ async def _summarize_section(section: SectionID, history: list, config: Runnable
         f"Use only what the user actually said. If little was provided, note what's still missing."
     )
     model = get_model(AnthropicModelName.HAIKU_45)
-    resp = await model.ainvoke([HumanMessage(content=prompt)], config)
+    # Tag as skip_stream so these summary tokens are NOT pushed to the user-facing SSE
+    # stream (the /stream endpoint drops tokens carrying this tag). Without it, this
+    # internal third-person summary leaks into the reply bubble.
+    skip_cfg = {**(config or {}), "tags": [*((config or {}).get("tags") or []), "skip_stream"]}
+    resp = await model.ainvoke([HumanMessage(content=prompt)], skip_cfg)
     return _text(resp.content).strip()
 
 
@@ -124,8 +168,87 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         logger.warning("memory_updater | user_id %r is not int-coercible", user_id_raw)
         user_id = user_id_raw
 
-    # 1. Save the current section's content if the decision said so (or we're advancing).
-    if should_save or advancing:
+    # Section is complete when the decision advanced (NEXT) OR the user is
+    # satisfied — matches the reference _status_from_output.
+    # Reliable finish (mirrors FounderBuddy): on the LAST section, a clear done /
+    # plan-request from the user finalizes it even if Haiku never set is_satisfied,
+    # so the formatted plan card is never blocked by a conservative decision.
+    last_user = _last_user_text(history)
+    is_last_section = current == list(SectionID)[-1]
+    user_done = bool(is_satisfied) or any(s in last_user for s in _DONE_SIGNALS)
+    user_requested_plan = any(s in last_user for s in _PLAN_REQUESTS)
+
+    # The signals above read the LAST user message — which, on a loop-back turn,
+    # still belongs to the PREVIOUS section. When the loop advances into the final
+    # section, is_last_section flips true while that stale message is still the
+    # most recent one, so an ordinary "next" used to leave Preferences would fire
+    # the whole plan the instant Nutrition opened, before the user answered a
+    # single nutrition question. Require input the user actually gave *after*
+    # entering this section — the same "fresh input" test generate_decision uses
+    # (history[-1] is the reply we just wrote; history[-2] is the user's turn only
+    # if they just spoke, and another AI message on a loop-back opener).
+    has_fresh_user_input = len(history) >= 2 and isinstance(history[-2], HumanMessage)
+
+    # On the last section, "advance" doesn't mean "open the next section" — it means
+    # generate the entire plan and end the conversation. So it must not happen while
+    # we've just asked the user something and they haven't answered: the decision
+    # node is deliberately told to advance despite a pending question (that keeps it
+    # from fixating mid-conversation), which is right for sections 1-4 but here left
+    # the user staring at a question that got steamrolled by the plan.
+    #
+    # Two details this has to get right, both learned the hard way:
+    #  - Look for a question mark ANYWHERE, not just at the end. The reply that
+    #    triggered this typically asks its question and then trails off with an
+    #    offer ("...or 3 meals with a snack? If you're not sure, 3 meals plus a
+    #    snack is a sensible default."), so it doesn't end in "?".
+    #  - Gate the escape hatch on the user's LITERAL words, not is_satisfied. The
+    #    decision prompt pushes is_satisfied hard toward true and the model sets it
+    #    for "they've told me enough to proceed", which is not the same as the user
+    #    saying they're done — using it here defeated the guard entirely.
+    reply_asks_question = "?" in _last_reply_text(history)
+    explicit_user_done = (
+        any(s in last_user for s in _DONE_SIGNALS) or user_requested_plan
+    )
+    awaiting_answer_on_last = (
+        is_last_section
+        # Only meaningful on a turn the user actually spoke in. The loop-back pass
+        # that opens this section also ends in a question, and without this it
+        # burned the single deferral below on a turn where nothing could fire
+        # anyway — leaving the guard already spent when the user finally answered.
+        and has_fresh_user_input
+        and reply_asks_question
+        and not explicit_user_done
+        # Only ever hold back once, so a last section that keeps asking questions
+        # can't strand the user without a plan — the failure mode this whole fix
+        # exists to avoid.
+        and not state.get("finish_deferred_once", False)
+    )
+    if awaiting_answer_on_last:
+        updates["finish_deferred_once"] = True
+        # End the turn here. Without this the directive is still NEXT, so the graph
+        # loops back through router into generate_reply and appends a SECOND reply
+        # that wraps up and announces "your plan is on its way!" — directly
+        # contradicting the question we just deferred for, and promising a plan
+        # that won't arrive until the user sends another message. STAY leaves
+        # route_decision with no pending user input, which ends the turn cleanly
+        # on the follow-up question.
+        updates["router_directive"] = RouterDirective.STAY.value
+
+    # Both routes to the plan have to respect the deferral — gating only the
+    # section status left finish_on_last firing straight past it.
+    finish_on_last = (
+        is_last_section
+        and has_fresh_user_input
+        and (user_done or user_requested_plan)
+        and not awaiting_answer_on_last
+    )
+
+    section_done = (
+        advancing or bool(is_satisfied) or finish_on_last
+    ) and not awaiting_answer_on_last
+
+    # 1. Save the current section's content if the decision said so (or it's complete).
+    if should_save or section_done:
         summary = await _summarize_section(current, history, config)
         cur = section_states.get(current.value) or SectionState(section_id=current)
         # Guard: never overwrite existing content with an empty summary.
@@ -136,8 +259,8 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         cur.satisfaction_status = (
             "satisfied" if is_satisfied else "needs_improvement" if is_satisfied is False else None
         )
-        # Completeness gate: only DONE when the decision advanced this section.
-        if advancing:
+        # Completeness gate: DONE when advanced or satisfied; otherwise at least IN_PROGRESS.
+        if section_done:
             cur.status = SectionStatus.DONE
         elif cur.status == SectionStatus.PENDING:
             cur.status = SectionStatus.IN_PROGRESS
@@ -157,11 +280,14 @@ async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dic
         section_states.get(s.value) and section_states[s.value].status == SectionStatus.DONE
         for s in SectionID
     )
-    if all_done:
+    # Don't re-trigger once a plan already exists — otherwise any later "done"-ish
+    # message (e.g. the user re-affirming) regenerates the plan again, wasting an
+    # expensive Sonnet call and swapping in a second, different plan card.
+    if (all_done or finish_on_last) and not state.get("finished"):
         updates["should_generate_final_output"] = True
 
     logger.info(
-        "memory_updater | section=%s advancing=%s saved=%s all_done=%s",
-        current.value, advancing, should_save or advancing, all_done,
+        "memory_updater | section=%s advancing=%s done=%s finish_on_last=%s all_done=%s fresh_input=%s",
+        current.value, advancing, section_done, finish_on_last, all_done, has_fresh_user_input,
     )
     return updates

@@ -74,10 +74,11 @@ const getSupabaseClient = () => {
 
 // XBuddy section mapping (string ID to display info)
 const FOUNDER_BUDDY_SECTIONS: Record<string, { name: string; displayName: string }> = {
-  'mission': { name: 'Mission', displayName: 'Mission' },
-  'idea': { name: 'Idea', displayName: 'Idea' },
-  'team_traction': { name: 'Team & Traction', displayName: 'Team & Traction' },
-  'invest_plan': { name: 'Investment Plan', displayName: 'Investment Plan' },
+  'goals': { name: 'Goals', displayName: 'Goals' },
+  'profile': { name: 'Profile', displayName: 'Profile' },
+  'schedule': { name: 'Schedule', displayName: 'Schedule' },
+  'preferences': { name: 'Preferences', displayName: 'Preferences' },
+  'nutrition': { name: 'Nutrition', displayName: 'Nutrition' },
 };
 
 export async function POST(req: NextRequest) {

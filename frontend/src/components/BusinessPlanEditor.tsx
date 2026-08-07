@@ -93,7 +93,7 @@ export default function BusinessPlanEditor({
       setError(null);
 
       const { data, error: fetchError } = await supabase
-        .from('final-outputs')
+        .from('business_plans')
         .select('content, markdown_content, updated_at')
         .eq('user_id', userId)
         .eq('thread_id', threadId)
@@ -146,7 +146,7 @@ export default function BusinessPlanEditor({
         {
           event: 'UPDATE',
           schema: 'public',
-          table: 'final-outputs',
+          table: 'business_plans',
           filter: `thread_id=eq.${threadId}`,
         },
         (payload) => {
@@ -306,7 +306,7 @@ export default function BusinessPlanEditor({
 
           console.log('Saving final-output...');
           const { error: saveError } = await supabase
-            .from('final-outputs')
+            .from('business_plans')
             .upsert({
               user_id: userId,
               thread_id: threadId,
