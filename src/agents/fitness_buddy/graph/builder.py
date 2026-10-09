@@ -1,4 +1,4 @@
-"""Graph builder for your XBuddy Agent.
+"""Graph builder for FitnessBuddy Agent.
 
 This is the core of your LangGraph agent. It wires together all the nodes
 into a StateGraph with conditional edges.
@@ -11,7 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 
-from ..models import XBuddyState
+from ..models import FitnessBuddyState
 from ..nodes import (
     implementation_node,
     generate_decision_node,
@@ -23,8 +23,8 @@ from ..nodes import (
 from .routes import route_after_memory_updater, route_decision
 
 
-def build_xbuddy_graph():
-    """Build the XBuddy agent graph.
+def build_fitness_buddy_graph():
+    """Build the FitnessBuddy agent graph.
 
     Graph flow:
         START -> initialize -> router -> generate_reply -> generate_decision
@@ -33,7 +33,7 @@ def build_xbuddy_graph():
                                         |
                                 implementation -> END
     """
-    graph = StateGraph(XBuddyState)
+    graph = StateGraph(FitnessBuddyState)
 
     # Add nodes
     graph.add_node("initialize", initialize_node)

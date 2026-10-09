@@ -23,12 +23,12 @@ from core.llm import get_model
 from core.models import AnthropicModelName
 
 from ..enums import RouterDirective, SectionID, SectionStatus
-from ..models import SectionContent, SectionState, XBuddyState
+from ..models import SectionContent, SectionState, FitnessBuddyState
 from ..prompts import get_next_section, get_section_template
 
 logger = logging.getLogger(__name__)
 
-AGENT_ID = "fitness-buddy"
+AGENT_ID = "fitness_buddy"
 
 
 def _directive_value(directive) -> str:
@@ -144,7 +144,7 @@ def _persist_section(user_id: int, thread_id: str, state: SectionState) -> None:
         logger.warning("memory_updater | Supabase persist failed (%s)", exc)
 
 
-async def memory_updater_node(state: XBuddyState, config: RunnableConfig) -> dict:
+async def memory_updater_node(state: FitnessBuddyState, config: RunnableConfig) -> dict:
     """Update section state, persist it, and check for completion."""
     updates: dict = {}
     current = _as_section_id(state.get("current_section"))

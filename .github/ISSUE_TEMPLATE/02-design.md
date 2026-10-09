@@ -1,7 +1,7 @@
 ---
 name: "Stage 2: Design"
-about: Architecture and state design for your XBuddy agent
-title: "[Design] My XBuddy"
+about: Architecture and state design for your FitnessBuddy agent
+title: "[Design] My FitnessBuddy"
 labels: stage-2
 ---
 

@@ -16,7 +16,7 @@ interface Section {
 }
 
 export default function Chat() {
-  const [selectedAgent, setSelectedAgent] = useState<string>('xbuddy');
+  const [selectedAgent, setSelectedAgent] = useState<string>('fitness_buddy');
   const [userId, setUserId] = useState<number>(12);
   const [mode, setMode] = useState<'invoke' | 'stream'>('stream');
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -168,8 +168,8 @@ export default function Chat() {
           </button>
         </div>
 
-        {/* Progress Sidebar - Only show for xbuddy */}
-        {selectedAgent === 'xbuddy' && (
+        {/* Progress Sidebar - Only show for fitness_buddy */}
+        {selectedAgent === 'fitness_buddy' && (
           <div style={{
             padding: '16px',
             borderBottom: '1px solid #e2e8f0',

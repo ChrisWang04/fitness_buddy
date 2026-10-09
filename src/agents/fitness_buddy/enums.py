@@ -1,4 +1,4 @@
-"""Enumerations for your XBuddy Agent."""
+"""Enumerations for FitnessBuddy Agent."""
 
 from enum import Enum
 

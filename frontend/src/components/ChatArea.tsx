@@ -125,7 +125,7 @@ export default function ChatArea({
         const res = await fetch(
           `/api/plan?thread_id=${encodeURIComponent(threadId)}&user_id=${encodeURIComponent(
             String(userId)
-          )}&agent_id=${encodeURIComponent(selectedAgent || 'xbuddy')}`
+          )}&agent_id=${encodeURIComponent(selectedAgent || 'fitness_buddy')}`
         );
         const data = await res.json();
         const markdown = data?.business_plan || data?.markdown_content || '';
@@ -223,7 +223,7 @@ export default function ChatArea({
           thread_id: threadId,
           user_id: userId,
           markdown: planDraft,
-          agent_id: selectedAgent || 'xbuddy',
+          agent_id: selectedAgent || 'fitness_buddy',
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -243,14 +243,14 @@ export default function ChatArea({
 
   const getAgentName = (agentId: string) => {
     const names: Record<string, string> = {
-      'xbuddy': 'FitnessBuddy'
+      'fitness_buddy': 'FitnessBuddy'
     };
     return names[agentId] || 'AI Agent';
   };
 
   const getPlaceholderText = (agentId: string) => {
     const placeholders: Record<string, string> = {
-      'xbuddy': 'Try: "I want to build a workout plan"'
+      'fitness_buddy': 'Try: "I want to build a workout plan"'
     };
     return placeholders[agentId] || 'Type your message...';
   };
@@ -286,7 +286,7 @@ export default function ChatArea({
         const res = await fetch(
           `/api/plan?thread_id=${encodeURIComponent(recoveryThreadId)}&user_id=${encodeURIComponent(
             String(userId)
-          )}&agent_id=${encodeURIComponent(selectedAgent || 'xbuddy')}`
+          )}&agent_id=${encodeURIComponent(selectedAgent || 'fitness_buddy')}`
         );
         const data = await res.json();
         const markdown = data?.business_plan || data?.markdown_content || '';
@@ -697,7 +697,7 @@ export default function ChatArea({
                color: '#64748b',
                margin: '4px 0 0 0'
              }}>
-               {selectedAgent === 'xbuddy' && 'Build a personalized training & nutrition plan'}
+               {selectedAgent === 'fitness_buddy' && 'Build a personalized training & nutrition plan'}
              </p>
            )}
          </div>

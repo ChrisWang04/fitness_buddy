@@ -1,4 +1,4 @@
-"""Pydantic models for your XBuddy Agent.
+"""Pydantic models for FitnessBuddy Agent.
 
 Study FounderBuddy's models.py to understand how these work:
 https://github.com/Victoria824/FounderBuddy/blob/main/src/agents/founder_buddy/models.py
@@ -38,7 +38,7 @@ class ContextPacket(BaseModel):
     validation_rules: dict[str, Any] | None = None
 
 
-class XBuddyData(BaseModel):
+class FitnessBuddyData(BaseModel):
     """Fitness data collected from the user across the five sections.
 
     Every field is optional / defaulted on purpose: data is gathered
@@ -125,8 +125,8 @@ class ChatAgentOutput(BaseModel):
         return v
 
 
-class XBuddyState(MessagesState):
-    """State for your XBuddy agent.
+class FitnessBuddyState(MessagesState):
+    """State for FitnessBuddy agent.
 
     Extends MessagesState (which provides `messages: list[BaseMessage]`).
     Study FounderBuddyState to understand each field's role in the graph.
@@ -142,8 +142,8 @@ class XBuddyState(MessagesState):
     router_directive: str = RouterDirective.NEXT
     finished: bool = False
 
-    # Domain-specific data — TODO: customize XBuddyData above
-    user_data: XBuddyData = Field(default_factory=XBuddyData)
+    # Domain-specific data — TODO: customize FitnessBuddyData above
+    user_data: FitnessBuddyData = Field(default_factory=FitnessBuddyData)
 
     # Memory management
     short_memory: list[BaseMessage] = Field(default_factory=list)

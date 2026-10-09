@@ -16,7 +16,7 @@ interface ProgressSidebarProps {
   onEditBusinessPlan?: () => void;
 }
 
-// Define all sections for xbuddy
+// Define all sections for fitness_buddy
 const FOUNDER_BUDDY_SECTIONS = [
   { id: 'goals', name: 'Goals', displayName: 'Goals' },
   { id: 'profile', name: 'Profile', displayName: 'Profile' },
@@ -85,8 +85,8 @@ export default function ProgressSidebar({
     }
   };
 
-  // For xbuddy, show vertical list of all sections
-  if (selectedAgent === 'xbuddy') {
+  // For fitness_buddy, show vertical list of all sections
+  if (selectedAgent === 'fitness_buddy') {
     return (
       <div style={{
         width: '100%',

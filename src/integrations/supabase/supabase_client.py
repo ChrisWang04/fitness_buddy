@@ -52,7 +52,7 @@ class SupabaseClient:
         thread_id: str,
         content: str,
         markdown_content: str,
-        agent_id: str = "founder-buddy"
+        agent_id: str = "fitness_buddy"
     ) -> dict:
         """Save business plan to Supabase (synchronous operation)."""
         try:
@@ -83,7 +83,7 @@ class SupabaseClient:
         plain_text: str,
         status: str,
         satisfaction_status: Optional[str] = None,
-        agent_id: str = "founder-buddy"
+        agent_id: str = "fitness_buddy"
     ) -> dict:
         """Save section state to Supabase (synchronous operation)."""
         try:

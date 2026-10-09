@@ -11,11 +11,7 @@ interface ConversationHistoryProps {
 }
 
 const agentIcons: Record<string, string> = {
-  'value-canvas': '💎',
-  'mission-pitch': '🎯',
-  'signature-pitch': '✍️',
-  'social-pitch': '🌐',
-  'special-report': '📊',
+  'fitness_buddy': '🏋️',
 };
 
 export default function ConversationHistory({
@@ -350,7 +346,7 @@ export default function ConversationHistory({
                 }}>
                   <span>{conv.messages.length} messages</span>
                   <span>•</span>
-                  <span>{conv.agentType.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ')}</span>
+                  <span>{conv.agentType.split(/[-_]/).map(w => w[0].toUpperCase() + w.slice(1)).join(' ')}</span>
                   {conv.currentSection && (
                     <>
                       <span>•</span>

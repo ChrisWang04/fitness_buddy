@@ -1,4 +1,4 @@
-"""Routing logic for XBuddy Agent graph.
+"""Routing logic for FitnessBuddy Agent graph.
 
 These functions are used as conditional edges in the StateGraph.
 Study FounderBuddy's routes.py:
@@ -10,10 +10,10 @@ from typing import Literal
 from langchain_core.messages import HumanMessage
 
 from ..enums import RouterDirective
-from ..models import XBuddyState
+from ..models import FitnessBuddyState
 
 
-def route_after_memory_updater(state: XBuddyState) -> Literal["implementation", "router"]:
+def route_after_memory_updater(state: FitnessBuddyState) -> Literal["implementation", "router"]:
     """Route after memory_updater — generate the final plan, or loop back to router.
 
     Matches the FounderBuddy reference: when all sections are complete, go to
@@ -28,7 +28,7 @@ def route_after_memory_updater(state: XBuddyState) -> Literal["implementation", 
     return "router"
 
 
-def route_decision(state: XBuddyState) -> Literal["generate_reply"] | None:
+def route_decision(state: FitnessBuddyState) -> Literal["generate_reply"] | None:
     """Determine whether to generate a reply or end the turn.
 
     TODO: Study FounderBuddy's route_decision to understand the full logic

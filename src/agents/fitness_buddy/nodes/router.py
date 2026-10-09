@@ -20,7 +20,7 @@ import logging
 from langchain_core.runnables import RunnableConfig
 
 from ..enums import RouterDirective, SectionID, SectionStatus
-from ..models import ContextPacket, XBuddyState
+from ..models import ContextPacket, FitnessBuddyState
 from ..prompts import get_next_unfinished_section, get_section_template
 from ..sections.base_prompt import BASE_RULES
 
@@ -32,7 +32,7 @@ def _directive_value(directive) -> str:
     return getattr(directive, "value", directive) or RouterDirective.NEXT.value
 
 
-async def router_node(state: XBuddyState, config: RunnableConfig) -> dict:
+async def router_node(state: FitnessBuddyState, config: RunnableConfig) -> dict:
     """Route to the correct section and load its context packet."""
     updates: dict = {}
     section_states = state.get("section_states", {})

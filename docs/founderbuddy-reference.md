@@ -1,6 +1,6 @@
 # FounderBuddy Reference
 
-Your XBuddy agent replicates the architecture of **FounderBuddy** — a production agent that helps entrepreneurs build business frameworks through structured dialogue.
+Your FitnessBuddy agent replicates the architecture of **FounderBuddy** — a production agent that helps entrepreneurs build business frameworks through structured dialogue.
 
 **Repo:** https://github.com/Victoria824/FounderBuddy
 

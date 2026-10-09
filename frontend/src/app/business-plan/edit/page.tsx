@@ -225,7 +225,7 @@ function EditBusinessPlanContent() {
             .upsert({
               user_id: userId,
               thread_id: threadId,
-              agent_id: 'xbuddy',
+              agent_id: 'fitness_buddy',
               content: markdownText, // Save as markdown text
               markdown_content: markdownText,
               updated_at: new Date().toISOString(),

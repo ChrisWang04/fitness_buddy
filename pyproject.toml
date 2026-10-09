@@ -1,7 +1,7 @@
 [project]
-name = "xbuddy"
+name = "fitness-buddy"
 version = "0.1.0"
-description = "AI Agent Residency — build your own XBuddy with LangGraph + FastAPI"
+description = "FitnessBuddy — a LangGraph + FastAPI + Supabase agent that builds personalized training & nutrition plans"
 readme = "README.md"
 authors = []
 classifiers = [

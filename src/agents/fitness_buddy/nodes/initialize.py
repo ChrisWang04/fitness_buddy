@@ -20,12 +20,12 @@ import logging
 from langchain_core.runnables import RunnableConfig
 
 from ..enums import RouterDirective, SectionID, SectionStatus
-from ..models import SectionState, XBuddyData, XBuddyState
+from ..models import SectionState, FitnessBuddyData, FitnessBuddyState
 
 logger = logging.getLogger(__name__)
 
 
-async def initialize_node(state: XBuddyState, config: RunnableConfig) -> dict:
+async def initialize_node(state: FitnessBuddyState, config: RunnableConfig) -> dict:
     """Initialize conversation state (idempotent — cold + warm start safe)."""
     updates: dict = {}
     configurable = config.get("configurable", {}) or {}
@@ -62,7 +62,7 @@ async def initialize_node(state: XBuddyState, config: RunnableConfig) -> dict:
 
     # 4. Ensure the domain data container exists.
     if not state.get("user_data"):
-        updates["user_data"] = XBuddyData()
+        updates["user_data"] = FitnessBuddyData()
 
     logger.info(
         "initialize_node | thread=%s cold_start=%s current_section=%s",

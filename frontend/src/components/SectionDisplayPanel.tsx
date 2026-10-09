@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 
 interface SectionData {
-  section_id: number | string; // number for value-canvas, string for xbuddy
+  section_id: number | string; // number for value-canvas, string for fitness_buddy
   section_name: string;
   name?: string; // Display name
   is_completed: boolean;
@@ -78,7 +78,7 @@ export default function SectionDisplayPanel({ userId, selectedAgent, currentSect
   const [selectedStyle, setSelectedStyle] = useState<string>('');
 
   useEffect(() => {
-    if (userId && selectedAgent === 'xbuddy') {
+    if (userId && selectedAgent === 'fitness_buddy') {
       fetchSections();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -88,7 +88,7 @@ export default function SectionDisplayPanel({ userId, selectedAgent, currentSect
     setLoading(true);
     setError(null);
     try {
-      // For XBuddy, fetch from Supabase via API
+      // For FitnessBuddy, fetch from Supabase via API
       const response = await fetch('/api/sections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -145,7 +145,7 @@ export default function SectionDisplayPanel({ userId, selectedAgent, currentSect
     console.log('Fetching section content:', { userId, threadId, sectionId });
     
     try {
-      // For XBuddy, fetch from Supabase via API
+      // For FitnessBuddy, fetch from Supabase via API
       const response = await fetch('/api/sections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -215,7 +215,7 @@ export default function SectionDisplayPanel({ userId, selectedAgent, currentSect
   };
 
   const handleSectionChange = (sectionId: string) => {
-    // Handle both numeric (value-canvas) and string (xbuddy) section IDs
+    // Handle both numeric (value-canvas) and string (fitness_buddy) section IDs
     const id = isNaN(Number(sectionId)) ? sectionId : Number(sectionId);
     setSelectedSectionId(id);
     if (id) {
@@ -324,7 +324,7 @@ export default function SectionDisplayPanel({ userId, selectedAgent, currentSect
     }
   };
 
-  if (selectedAgent !== 'xbuddy') {
+  if (selectedAgent !== 'fitness_buddy') {
     return null;
   }
 

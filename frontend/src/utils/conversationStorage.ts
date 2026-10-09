@@ -28,7 +28,10 @@ export const conversationStorage = {
   getAll(): ConversationRecord[] {
     try {
       const data = localStorage.getItem(STORAGE_KEY);
-      return data ? JSON.parse(data) : [];
+      const parsed: ConversationRecord[] = data ? JSON.parse(data) : [];
+      // Conversations saved before the xbuddy -> fitness_buddy rename still carry the old
+      // agent key; normalize so reopening them calls the renamed API route.
+      return parsed.map(c => (c.agentType === 'xbuddy' ? { ...c, agentType: 'fitness_buddy' } : c));
     } catch (error) {
       console.error('Error loading conversations:', error);
       return [];
