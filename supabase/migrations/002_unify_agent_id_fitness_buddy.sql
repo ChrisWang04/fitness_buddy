@@ -1,5 +1,14 @@
 -- 002: unify agent_id after the xbuddy -> fitness_buddy rename.
 --
+-- STATUS: APPLIED to production (Supabase project zsykrzpxqxizzafcxvpp) on 2026-10-10,
+-- manually via the Supabase SQL editor.
+--   Before: business_plans  fitness-buddy 41
+--           section_states  fitness-buddy 268, fitness_buddy 3
+--   After:  business_plans  fitness_buddy 41
+--           section_states  fitness_buddy 271
+--           conversation_messages: 0 rows (unchanged)
+-- No rows lost. Re-running is a no-op. On a fresh database, run 001_* first, then this file.
+--
 -- Before the rename, rows were written under inconsistent IDs: the backend used
 -- 'fitness-buddy', the column default was the template's 'founder-buddy', and some
 -- frontend paths used 'xbuddy'. The app now writes and reads 'fitness_buddy' only.
