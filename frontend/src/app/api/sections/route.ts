@@ -57,7 +57,7 @@ const getBackendHeaders = () => {
 
 // Agent ID mapping
 const AGENT_ID_MAP: Record<string, number> = {
-  'xbuddy': 1, // XBuddy agent ID
+  'fitness_buddy': 1, // FitnessBuddy agent ID
 };
 
 // Supabase client initialization
@@ -72,7 +72,7 @@ const getSupabaseClient = () => {
   return createClient(supabaseUrl, supabaseAnonKey);
 };
 
-// XBuddy section mapping (string ID to display info)
+// FitnessBuddy section mapping (string ID to display info)
 const FOUNDER_BUDDY_SECTIONS: Record<string, { name: string; displayName: string }> = {
   'goals': { name: 'Goals', displayName: 'Goals' },
   'profile': { name: 'Profile', displayName: 'Profile' },
@@ -129,7 +129,7 @@ export async function POST(req: NextRequest) {
           .from('section_states')
           .select('*')
           .eq('user_id', finalUserId)
-          .eq('agent_id', 'xbuddy');
+          .eq('agent_id', 'fitness_buddy');
         
         if (threadId) {
           query = query.eq('thread_id', threadId);
@@ -173,7 +173,7 @@ export async function POST(req: NextRequest) {
                 ));
                 
                 sectionsMap.set(sectionId, {
-                  section_id: sectionId, // Keep as string for xbuddy
+                  section_id: sectionId, // Keep as string for fitness_buddy
                   section_name: sectionInfo.name,
                   name: sectionInfo.displayName,
                   is_completed: state.status === 'done',
@@ -256,7 +256,7 @@ export async function POST(req: NextRequest) {
           userId: finalUserId,
           threadId: threadId,
           sectionId: sectionId,
-          agentId: 'xbuddy'
+          agentId: 'fitness_buddy'
         });
         
         const { data: sectionState, error } = await supabase
@@ -264,7 +264,7 @@ export async function POST(req: NextRequest) {
           .select('*')
           .eq('user_id', finalUserId)
           .eq('thread_id', threadId)
-          .eq('agent_id', 'xbuddy')
+          .eq('agent_id', 'fitness_buddy')
           .eq('section_id', sectionId)
           .maybeSingle();
         
@@ -357,7 +357,7 @@ export async function POST(req: NextRequest) {
           );
         }
         
-        const agentId = 'xbuddy'; // Currently only xbuddy is supported
+        const agentId = 'fitness_buddy'; // Currently only fitness_buddy is supported
         const backendUrl = getBackendApiUrl();
         
         if (!backendUrl) {
@@ -417,7 +417,7 @@ export async function POST(req: NextRequest) {
           );
         }
         
-        const agentId = AGENT_ID_MAP['xbuddy'] || 1;
+        const agentId = AGENT_ID_MAP['fitness_buddy'] || 1;
         const dentAppUrl = `${getDentAppApiUrl()}/section_states/${agentId}/${sectionId}`;
         
         // Content from refine is already plain text, but handle both formats
@@ -487,7 +487,7 @@ export async function POST(req: NextRequest) {
           );
         }
         
-        const agentId = 'xbuddy'; // Currently only xbuddy is supported
+        const agentId = 'fitness_buddy'; // Currently only fitness_buddy is supported
         const backendUrl = getBackendApiUrl();
         
         if (!backendUrl) {

@@ -11,7 +11,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const threadId = searchParams.get('thread_id');
   const userId = searchParams.get('user_id');
-  const agentId = searchParams.get('agent_id') || 'xbuddy';
+  const agentId = searchParams.get('agent_id') || 'fitness_buddy';
 
   if (!threadId || !userId) {
     return Response.json(
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
   }
 
   const { thread_id, user_id, markdown } = body;
-  const agentId = body.agent_id || 'xbuddy';
+  const agentId = body.agent_id || 'fitness_buddy';
 
   if (!thread_id || user_id === undefined || user_id === null || typeof markdown !== 'string') {
     return Response.json(

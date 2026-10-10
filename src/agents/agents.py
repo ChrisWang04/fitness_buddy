@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.pregel import Pregel
 
-from .xbuddy.agent import graph as xbuddy_agent
+from .fitness_buddy.agent import graph as fitness_buddy_agent
 from schema import AgentInfo
 
-DEFAULT_AGENT = "xbuddy"
+DEFAULT_AGENT = "fitness_buddy"
 
 AgentGraph = CompiledStateGraph | Pregel
 
@@ -18,9 +18,9 @@ class Agent:
 
 
 agents: dict[str, Agent] = {
-    "xbuddy": Agent(
-        description="TODO: describe your XBuddy agent",
-        graph=xbuddy_agent,
+    "fitness_buddy": Agent(
+        description="FitnessBuddy — builds a personalized training and nutrition plan through a 5-section conversation",
+        graph=fitness_buddy_agent,
     ),
 }
 

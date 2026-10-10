@@ -18,12 +18,12 @@ from langgraph.config import get_stream_writer
 from core.llm import get_model
 
 from ..enums import SectionID
-from ..models import XBuddyState
+from ..models import FitnessBuddyState
 from ..prompts import get_section_template
 
 logger = logging.getLogger(__name__)
 
-AGENT_ID = "fitness-buddy"
+AGENT_ID = "fitness_buddy"
 
 # The final plan is long (overview + weekly table + per-day exercise tables +
 # nutrition + tips); the default 3000-token cap truncates it mid-sentence.
@@ -73,7 +73,7 @@ def _persist_plan(user_id, thread_id: str, plan: str) -> None:
         logger.warning("implementation | Supabase save failed (%s)", exc)
 
 
-async def implementation_node(state: XBuddyState, config: RunnableConfig) -> dict:
+async def implementation_node(state: FitnessBuddyState, config: RunnableConfig) -> dict:
     """Synthesize the final training + nutrition plan from all section summaries."""
     section_states = state.get("section_states", {})
 

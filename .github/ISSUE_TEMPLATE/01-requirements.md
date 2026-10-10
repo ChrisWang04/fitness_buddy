@@ -1,7 +1,7 @@
 ---
 name: "Stage 1: Requirements"
-about: Define your XBuddy agent's requirements
-title: "[Requirements] My XBuddy"
+about: Define your FitnessBuddy agent's requirements
+title: "[Requirements] My FitnessBuddy"
 labels: stage-1
 ---
 

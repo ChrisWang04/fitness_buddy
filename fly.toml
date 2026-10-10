@@ -9,7 +9,7 @@ primary_region = "sjc"   # pick one near you: sjc (US-west), iad (US-east), lhr,
   PORT = "8080"
   HOST = "0.0.0.0"
   DATABASE_TYPE = "sqlite"
-  SQLITE_DB_PATH = "/tmp/xbuddy_checkpoints.db"
+  SQLITE_DB_PATH = "/tmp/fitness_buddy_checkpoints.db"
 
 [http_service]
   internal_port = 8080

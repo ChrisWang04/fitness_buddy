@@ -52,25 +52,25 @@ export default function ConfigPanel({
         description: agent.description
       }));
       
-      // Filter to only show xbuddy agent
-      const filteredAgents = transformedAgents.filter((agent: Agent) => agent.id === 'xbuddy');
+      // Filter to only show fitness_buddy agent
+      const filteredAgents = transformedAgents.filter((agent: Agent) => agent.id === 'fitness_buddy');
       
       setAgents(filteredAgents);
       
-      // Auto-select xbuddy if not already selected
+      // Auto-select fitness_buddy if not already selected
       if (filteredAgents.length > 0 && !selectedAgent) {
-        onAgentChange('xbuddy');
+        onAgentChange('fitness_buddy');
       }
     } catch (error) {
       console.error('Failed to fetch agents:', error);
-      // Fallback - only xbuddy
+      // Fallback - only fitness_buddy
       setAgents([
-        { id: 'xbuddy', name: 'XBuddy', description: 'Validate and refine your startup idea' }
+        { id: 'fitness_buddy', name: 'FitnessBuddy', description: 'Build a personalized training & nutrition plan' }
       ]);
       
-      // Auto-select xbuddy if not already selected
+      // Auto-select fitness_buddy if not already selected
       if (!selectedAgent) {
-        onAgentChange('xbuddy');
+        onAgentChange('fitness_buddy');
       }
     } finally {
       setLoading(false);
@@ -79,7 +79,7 @@ export default function ConfigPanel({
 
   const getAgentName = (key: string) => {
     const names: Record<string, string> = {
-      'xbuddy': 'XBuddy'
+      'fitness_buddy': 'FitnessBuddy'
     };
     return names[key] || key;
   };

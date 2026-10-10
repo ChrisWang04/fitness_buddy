@@ -164,7 +164,7 @@ function SectionEditorContent() {
               user_id: userId,
               thread_id: threadId,
               section_id: sectionId,
-              agent_id: 'xbuddy',
+              agent_id: 'fitness_buddy',
               content: newContent,
               plain_text: plainText,
               status: 'in_progress',

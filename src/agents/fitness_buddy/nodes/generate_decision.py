@@ -22,7 +22,7 @@ from core.llm import get_model
 from core.models import AnthropicModelName
 
 from ..enums import RouterDirective, SectionID
-from ..models import ChatAgentDecision, ChatAgentOutput, XBuddyState
+from ..models import ChatAgentDecision, ChatAgentOutput, FitnessBuddyState
 from ..prompts import get_section_template
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ def _extract_text(content) -> str:
     return content or ""
 
 
-async def generate_decision_node(state: XBuddyState, config: RunnableConfig) -> dict:
+async def generate_decision_node(state: FitnessBuddyState, config: RunnableConfig) -> dict:
     """Analyze the conversation and produce a structured routing decision."""
     current = state.get("current_section", list(SectionID)[0])
     if not isinstance(current, SectionID):

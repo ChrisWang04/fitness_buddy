@@ -29,7 +29,7 @@ from langchain_core.runnables import RunnableConfig
 from core.llm import get_model
 
 from ..enums import SectionID, SectionStatus
-from ..models import XBuddyState
+from ..models import FitnessBuddyState
 from ..prompts import get_section_template
 from ..sections.base_prompt import BASE_RULES
 
@@ -45,7 +45,7 @@ def _strip_trailing_ai(messages: list[BaseMessage]) -> list[BaseMessage]:
     return list(messages[:end])
 
 
-async def generate_reply_node(state: XBuddyState, config: RunnableConfig) -> dict:
+async def generate_reply_node(state: FitnessBuddyState, config: RunnableConfig) -> dict:
     """Generate a conversational reply for the current section."""
     packet = state.get("context_packet")
     system_prompt = packet.system_prompt if packet else BASE_RULES

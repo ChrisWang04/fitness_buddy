@@ -21,8 +21,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langsmith import Client, evaluate
 
-from agents.xbuddy.enums import SectionID
-from agents.xbuddy.prompts import get_section_template
+from agents.fitness_buddy.enums import SectionID
+from agents.fitness_buddy.prompts import get_section_template
 from core.llm import get_model
 from core.models import AnthropicModelName
 

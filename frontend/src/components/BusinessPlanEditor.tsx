@@ -53,7 +53,7 @@ export default function BusinessPlanEditor({
         body: JSON.stringify({
           user_id: userId,
           thread_id: threadId,
-          agent_id: 'xbuddy',
+          agent_id: 'fitness_buddy',
         }),
       });
       
@@ -310,7 +310,7 @@ export default function BusinessPlanEditor({
             .upsert({
               user_id: userId,
               thread_id: threadId,
-              agent_id: 'xbuddy',
+              agent_id: 'fitness_buddy',
               content: markdownText,
               markdown_content: markdownText,
               updated_at: new Date().toISOString(),

@@ -17,12 +17,12 @@ Add to your `.env`:
 ```bash
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_API_KEY=your-api-key
-LANGCHAIN_PROJECT=xbuddy
+LANGCHAIN_PROJECT=fitness_buddy
 ```
 
 ## 4. Verify
 
-Run your agent and check https://smith.langchain.com — you should see traces appearing under the `xbuddy` project.
+Run your agent and check https://smith.langchain.com — you should see traces appearing under the `fitness_buddy` project.
 
 ## What to look for in traces
 

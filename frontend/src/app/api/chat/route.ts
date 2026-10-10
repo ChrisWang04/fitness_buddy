@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   const requestStartTime = Date.now();
   
   try {
-    const { messages, userId, threadId, mode = 'stream', agentId = 'xbuddy' } = await req.json();
+    const { messages, userId, threadId, mode = 'stream', agentId = 'fitness_buddy' } = await req.json();
     const latestMessage = messages[messages.length - 1]?.content || '';
     
     // Detailed request start log
